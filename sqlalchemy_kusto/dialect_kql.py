@@ -13,7 +13,16 @@ logger = logging.getLogger(__name__)
 
 aggregates_sql_to_kql = {
     "count(*)": "count()",
+    "count": "count",
+    "count(distinct": "dcount",
+    "count(distinct(": "dcount",
+    "count_distinct": "dcount",
+    "sum": "sum",
+    "avg": "avg",
+    "min": "min",
+    "max": "max",
 }
+AGGREGATE_PATTERN = r"(\w+)\s*\(\s*(DISTINCT|distinct\s*)?\(?\s*(\*|\w+)\s*\)?\s*\)"
 
 
 class UniversalSet:
@@ -98,25 +107,100 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
     def _get_projection_or_summarize(self, select: selectable.Select) -> str:
         """Builds the ending part of the query either project or summarize"""
+        projection_statement = ""
         columns = select.inner_columns
+        group_by_cols = select._group_by_clauses  # pylint: disable=protected-access
+        """ The following is the logic """
+        # With Columns :
+        #     - Do we have a group by clause ? --Yes---> Do we have aggregate columns ? --Yes--> Summarize new column(s)
+        #                |                                   |                                        with by clause
+        #                N                                   N --> Add to projection
+        #                |
+        #                |
+        #     - Do the columns have aliases ? --Yes---> Extend with aliases
+        #                |
+        #                N---> Add to projection
         if columns is not None:
-            column_labels = []
-            is_summarize = False
+            summarize_columns = set()
+            extend_columns = set()
+            projection_columns = set()
+            by_columns = set()
+            alias_name_map = {}
             for column in [c for c in columns if c.name != "*"]:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
-
-                if column_name in aggregates_sql_to_kql:
-                    is_summarize = True
-                    column_labels.append(
-                        self._build_column_projection(aggregates_sql_to_kql[column_name], column_alias)
-                    )
+                # Do we have a group by clause ?
+                match_agg_cols = re.match(AGGREGATE_PATTERN, column_name, re.IGNORECASE)
+                # Do we have aggregate columns ?
+                if match_agg_cols:
+                    aggregate_func, distinct_keyword, agg_column_name = match_agg_cols.groups()
+                    # Check if the aggregate function is count_distinct. This is case from superset
+                    # where we can use count(distinct or count_distinct)
+                    is_distinct = bool(distinct_keyword) or aggregate_func.casefold() == "count_distinct"
+                    kql_agg = self._sql_to_kql_aggregate(aggregate_func, agg_column_name, is_distinct)
+                    summarize_columns.add(self._build_column_projection(kql_agg, column_alias))
+                    if column_alias:
+                        projection_columns.add(self._escape_and_quote_columns(column_alias))
+                # No group by clause
                 else:
-                    column_labels.append(self._build_column_projection(column_name, column_alias))
+                    # Do the columns have aliases ?
+                    if column_alias:
+                        extend_columns.add(self._build_column_projection(column_name, column_alias, True))
+                        alias_name_map[column_alias] = column_name
+                        projection_columns.add(self._escape_and_quote_columns(column_alias))
+                    else:
+                        projection_columns.add(self._build_column_projection(column_name, column_alias, True))
 
-            if column_labels:
-                projection_type = "summarize" if is_summarize else "project"
-                return f"| {projection_type} {', '.join(column_labels)}"
-        return ""
+            # group by columns
+            for column in group_by_cols:
+                column_name, column_alias = self._extract_column_name_and_alias(column)
+                by_columns.add(column_name)
+
+            if summarize_columns:
+                # escape each column with _escape_and_quote_columns
+                projection_statement = f"| summarize {', '.join(sorted(summarize_columns))} "
+                if by_columns:
+                    by_columns_escaped = [self._escape_and_quote_columns(c) for c in by_columns]
+                    projection_columns.add(*by_columns_escaped)
+                    projection_statement = f"{projection_statement} by {', '.join(sorted(by_columns_escaped))}"
+            if extend_columns:
+                # escape each column with _escape_and_quote_columns
+                extend = f"| extend {', '.join(sorted(extend_columns))}"
+                projection_statement = f"{projection_statement} {extend}" if projection_statement else extend
+
+            if projection_columns:
+                for alias, name in alias_name_map.items():
+                    if self._escape_and_quote_columns(alias) in projection_columns:
+                        projection_columns.discard(self._escape_and_quote_columns(name))
+                # escape each column with _escape_and_quote_columns
+                project = (
+                    f"| project {', '.join(sorted(projection_columns, key=lambda x: x.split('=')[0], reverse=False))}"
+                )
+                projection_statement = f"{projection_statement} {project}" if projection_statement else project
+
+        return projection_statement
+
+    @staticmethod
+    def _escape_and_quote_columns(name: str):
+        name = name.strip()
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1]
+        # First, check if the name is already wrapped in ["ColumnName"] (escaped format)
+        if name.startswith('["') and name.endswith('"]'):
+            return name  # Return as is if already properly escaped
+        # Remove surrounding spaces
+        # Handle mathematical operations (wrap only the column part before operators)
+        # Find the position of the first operator or space that separates the column name
+        for operator in ["/", "+", "-", "*"]:
+            if operator in name:
+                # Split the name at the first operator and wrap the left part
+                parts = name.split(operator, 1)
+                # Remove quotes if they exist at the edges
+                col_part = parts[0].strip()
+                if col_part.startswith('"') and col_part.endswith('"'):
+                    return f'["{col_part[1:-1].strip()}"] {operator} {parts[1].strip()}'
+                return f'["{col_part}"] {operator} {parts[1].strip()}'  # Wrap the column part
+            # No operators found, just wrap the entire name
+            return f'["{name}"]'
 
     def _get_most_inner_element(self, clause):
         """Finds the most nested element in clause"""
@@ -141,13 +225,21 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     @staticmethod
     def _extract_column_name_and_alias(column: Column) -> Tuple[str, Optional[str]]:
         if hasattr(column, "element"):
-
-            return re.sub(r'"([^"]+)"', r'["\1"]', str(column.element)), column.name
-        return column.name, None
+            return str(column.element), column.name
+        if hasattr(column, "name"):
+            return str(column.name), None
+        return str(column), None
 
     @staticmethod
-    def _build_column_projection(column_name: str, column_alias: str = None):
+    def _build_column_projection(column_name: str, column_alias: str = None, is_extend: bool = False) -> str:
         """Generates column alias semantic for project statement"""
+        if is_extend:
+            return (
+                f"{column_alias} = {KustoKqlCompiler._escape_and_quote_columns(column_name)}"
+                if column_alias
+                else KustoKqlCompiler._escape_and_quote_columns(column_name)
+            )
+
         return f"{column_alias} = {column_name}" if column_alias else column_name
 
     @staticmethod
@@ -180,6 +272,32 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
         unquoted_schema = match.group(1).strip("\"'")
         return query.replace(original, f'database("{unquoted_schema}").["{unquoted_table}"]', 1)
+
+    @staticmethod
+    def _sql_to_kql_aggregate(sql_agg: str, column_name: str = None, is_distinct: bool = False) -> str:
+        """
+        Converts SQL aggregate function to KQL equivalent.
+        If a column name is provided, applies it to the aggregate.
+        """
+        has_column = column_name is not None and column_name.strip() != ""
+        column_name_escaped = KustoKqlCompiler._escape_and_quote_columns(column_name) if has_column else ""
+        return_value = None
+        # The count function is a special case because it can be used with or without a column name
+        # We can also use it in count(Distinct column_name) format. This has to be handled separately
+        if sql_agg and ("count" in sql_agg or "COUNT" in sql_agg):
+            if "*" in sql_agg or column_name == "*":
+                return_value = aggregates_sql_to_kql["count(*)"]
+            elif is_distinct:
+                return_value = f"dcount({column_name_escaped})"
+            else:
+                return_value = f"count({column_name_escaped})"
+        if return_value:
+            return return_value
+        # Other summarize operators have to be looked up
+        aggregate_function = aggregates_sql_to_kql.get(sql_agg.split("(")[0])
+        if aggregate_function:
+            return_value = f"{aggregate_function}({column_name_escaped})"
+        return return_value
 
 
 class KustoKqlHttpsDialect(KustoBaseDialect):

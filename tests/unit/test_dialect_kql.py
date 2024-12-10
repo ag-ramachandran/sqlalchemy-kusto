@@ -1,7 +1,9 @@
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import Column, MetaData, String, Table, column, create_engine, literal_column, select, text
+from sqlalchemy import Column, MetaData, String, Table, column, create_engine, distinct, literal_column, select, text
 from sqlalchemy.sql.selectable import TextAsFrom
+
+from sqlalchemy_kusto.dialect_kql import KustoKqlCompiler
 
 engine = create_engine("kustokql+https://localhost/testdb")
 
@@ -24,7 +26,8 @@ def test_compiler_with_projection():
     query_expected = (
         'let virtual_table = (["logs"] | take 10);'
         "virtual_table"
-        '| project id = ["Id"], tId = ["TypeId"], Type'
+        '| extend id = ["Id"], tId = ["TypeId"] '
+        '| project ["Type"], ["id"], ["tId"]'
         "| take __[POSTCOMPILE_param_1]"
     )
 
@@ -50,16 +53,13 @@ def test_compiler_with_star():
 def test_select_from_text():
     query = select([column("Field1"), column("Field2")]).select_from(text("logs")).limit(100)
     query_compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True})).replace("\n", "")
-    query_expected = '["logs"]' "| project Field1, Field2" "| take 100"
+    query_expected = '["logs"]| project ["Field1"], ["Field2"]| take 100'
 
     assert query_compiled == query_expected
 
 
 def test_group_by_text():
     # create a query from select_query_text creating clause
-    # query = (select(column("EventInfo_Time/time(1d)").label("EventInfo_Time"), column("ActiveUsers").label("ActiveUserMetric"))
-    txt = text('"EventInfo_Time" / time(1d) AS "EventInfo_Time", ActiveUsers AS "ActiveUserMetric" ')
-
     event_col = literal_column('"EventInfo_Time" / time(1d)').label("EventInfo_Time")
     active_users_col = literal_column("ActiveUsers").label("ActiveUserMetric")
     query = (
@@ -71,8 +71,83 @@ def test_group_by_text():
 
     query_compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True})).replace("\n", "")
     # raw query text from query
-    query_expected = """["ActiveUsersLastMonth"]| project EventInfo_Time = ["EventInfo_Time"] / time(1d), ActiveUserMetric = ActiveUsers"""
+    query_expected = (
+        '["ActiveUsersLastMonth"]'
+        '| extend ActiveUserMetric = ["ActiveUsers"], EventInfo_Time = ["EventInfo_Time"] / time(1d) '
+        '| project ["ActiveUserMetric"], ["EventInfo_Time"]'
+    )
     assert query_compiled == query_expected
+
+
+def test_distinct_count_by_text():
+    # create a query from select_query_text creating clause
+    # 'SELECT "EventInfo_Time" / time(1d) AS "EventInfo_Time", count(DISTINCT ActiveUsers) AS "DistinctUsers"
+    # FROM ActiveUsersLastMonth GROUP BY "EventInfo_Time" / time(1d) ORDER BY ActiveUserMetric DESC'
+    event_col = literal_column('"EventInfo_Time" / time(1d)').label("EventInfo_Time")
+    active_users_col = literal_column("ActiveUsers")
+    query = (
+        select([event_col, sa.func.count(distinct(active_users_col)).label("DistinctUsers")])
+        .select_from(text("ActiveUsersLastMonth"))
+        .group_by(literal_column('"EventInfo_Time" / time(1d)'))
+        .order_by(text("ActiveUserMetric DESC"))
+    )
+    query_compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True})).replace("\n", "")
+    # raw query text from query
+    query_expected = (
+        '["ActiveUsersLastMonth"]'
+        '| summarize DistinctUsers = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d) '
+        '| extend EventInfo_Time = ["EventInfo_Time"] / time(1d) '
+        '| project ["DistinctUsers"], ["EventInfo_Time"]'
+    )
+    assert query_compiled == query_expected
+
+
+def test_distinct_count_alt_by_text():
+    # create a query from select_query_text creating clause
+    # 'SELECT "EventInfo_Time" / time(1d) AS "EventInfo_Time", count_distinct(ActiveUsers) AS "DistinctUsers"
+    # FROM ActiveUsersLastMonth GROUP BY "EventInfo_Time" / time(1d) ORDER BY ActiveUserMetric DESC'
+    event_col = literal_column("EventInfo_Time / time(1d)").label("EventInfo_Time")
+    active_users_col = literal_column("COUNT_DISTINCT(ActiveUsers)")
+    query = (
+        select([event_col, active_users_col.label("DistinctUsers")])
+        .select_from(text("ActiveUsersLastMonth"))
+        .group_by(literal_column("EventInfo_Time / time(1d)"))
+        .order_by(text("ActiveUserMetric DESC"))
+    )
+    query_compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True})).replace("\n", "")
+    # raw query text from query
+    query_expected = (
+        '["ActiveUsersLastMonth"]'
+        '| summarize DistinctUsers = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d) '
+        '| extend EventInfo_Time = ["EventInfo_Time"] / time(1d) '
+        '| project ["DistinctUsers"], ["EventInfo_Time"]'
+    )
+
+    assert query_compiled == query_expected
+
+
+def test_escape_and_quote_columns():
+    assert KustoKqlCompiler._escape_and_quote_columns("EventInfo_Time") == '["EventInfo_Time"]'
+    assert KustoKqlCompiler._escape_and_quote_columns('["UserId"]') == '["UserId"]'
+    assert KustoKqlCompiler._escape_and_quote_columns("EventInfo_Time / time(1d)") == '["EventInfo_Time"] / time(1d)'
+
+
+def test_sql_to_kql_aggregate():
+    assert KustoKqlCompiler._sql_to_kql_aggregate("count(*)") == "count()"
+    assert KustoKqlCompiler._sql_to_kql_aggregate("count", "UserId") == 'count(["UserId"])'
+    assert (
+        KustoKqlCompiler._sql_to_kql_aggregate("count(distinct", "CustomerId", is_distinct=True)
+        == 'dcount(["CustomerId"])'
+    )
+    assert (
+        KustoKqlCompiler._sql_to_kql_aggregate("count_distinct", "CustomerId", is_distinct=True)
+        == 'dcount(["CustomerId"])'
+    )
+    assert KustoKqlCompiler._sql_to_kql_aggregate("sum", "Sales") == 'sum(["Sales"])'
+    assert KustoKqlCompiler._sql_to_kql_aggregate("avg", "ResponseTime") == 'avg(["ResponseTime"])'
+    assert KustoKqlCompiler._sql_to_kql_aggregate("min", "Size") == 'min(["Size"])'
+    assert KustoKqlCompiler._sql_to_kql_aggregate("max", "Area") == 'max(["Area"])'
+    assert KustoKqlCompiler._sql_to_kql_aggregate("unknown", "Column") is None
 
 
 def test_use_table():
@@ -87,7 +162,7 @@ def test_use_table():
     query = stream.select().limit(5)
     query_compiled = str(query.compile(engine)).replace("\n", "")
 
-    query_expected = '["logs"]' "| project Field1, Field2" "| take __[POSTCOMPILE_param_1]"
+    query_expected = '["logs"]' '| project ["Field1"], ["Field2"]| take __[POSTCOMPILE_param_1]'
     assert query_compiled == query_expected
 
 
@@ -121,7 +196,8 @@ def test_select_count():
         'let inner_qry = (["logs"]);'
         "inner_qry"
         "| where Field1 > 1 and Field2 < 2"
-        "| summarize count = count()"
+        "| summarize count = count()  "
+        '| project ["count"]'
         "| take 5"
     )
 
