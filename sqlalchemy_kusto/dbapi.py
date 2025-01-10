@@ -2,6 +2,7 @@ from collections import namedtuple
 from typing import Any
 
 from azure.identity import WorkloadIdentityCredential
+
 from azure.kusto.data import (
     ClientRequestProperties,
     KustoClient,
@@ -28,6 +29,7 @@ def check_result(func):
     """Decorator that checks if the cursor has results from `execute`."""
 
     def decorator(self, *args, **kwargs):
+
         if self._results is None:
             raise ValueError("Called before `execute`")
         return func(self, *args, **kwargs)
@@ -93,9 +95,7 @@ class Connection:
             # Managed Service Identity (MSI)
             if user_msi is None or user_msi == "":
                 # System managed identity
-                kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
-                    cluster
-                )
+                kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(cluster)
             else:
                 # user managed identity
                 kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
