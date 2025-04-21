@@ -88,6 +88,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     visit_empty_set_expr = None
     visit_sequence = None
     sort_with_clause_parts = 2
+    config_map = {}
 
     def visit_select(
         self,
@@ -101,7 +102,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         from_linter=None,
         **kwargs,
     ):
-        logger.debug("Incoming query: %s", select_stmt)
+        logger.debug("Incoming query: %s. Sensitive columns :%s will be filtered ", select_stmt, self.config_map)
         compiled_query_lines = []
 
         from_object = select_stmt.get_final_froms()[0]
@@ -663,5 +664,8 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 class KustoKqlHttpsDialect(KustoBaseDialect):
     name = "kustokql"
     statement_compiler = KustoKqlCompiler
+    logger.info("-------------------------------------------------")
+    logger.info(KustoBaseDialect.additional_config_map)
+    logger.info("-------------------------------------------------")
     preparer = KustoKqlIdentifierPreparer
     supports_statement_cache = True

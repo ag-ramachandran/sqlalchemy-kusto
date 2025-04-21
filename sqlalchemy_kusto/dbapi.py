@@ -71,6 +71,7 @@ class Connection:
         azure_ad_client_id: str | None = None,
         azure_ad_client_secret: str | None = None,
         azure_ad_tenant_id: str | None = None,
+        app_name:str = "sqlalchemy-kusto",
     ):
         self.closed = False
         self.cursors: list[Cursor] = []
@@ -103,7 +104,7 @@ class Connection:
         else:
             # neither SP or MSI
             kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster)
-        kcsb._set_connector_details("sqlalchemy-kusto", "1.1.0")
+        kcsb._set_connector_details(app_name, "1.1.0")
         self.kusto_client = KustoClient(kcsb)
         self.database = database
         self.properties = ClientRequestProperties()
