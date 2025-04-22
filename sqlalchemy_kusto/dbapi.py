@@ -1,3 +1,6 @@
+import json
+import logging
+import os
 from collections import namedtuple
 from typing import Any
 
@@ -12,6 +15,7 @@ from azure.kusto.data.exceptions import KustoAuthenticationError, KustoServiceEr
 
 from sqlalchemy_kusto import errors
 
+logger = logging.getLogger(__name__)
 
 def check_closed(func):
     """Decorator that checks if connection/cursor is closed."""
@@ -44,7 +48,14 @@ def connect(
     azure_ad_client_id: str | None = None,
     azure_ad_client_secret: str | None = None,
     azure_ad_tenant_id: str | None = None,
+    *cargs, **cparams
 ):  # pylint: disable=too-many-positional-arguments
+    config_map = cparams.pop("config", {})
+    pii_cols = config_map.pop("pii_cols",None)
+    if pii_cols is not None:
+        os.environ['pii_cols'] = json.dumps(pii_cols)
+        logger.info("Connecting to cluster %s , Database %s , With custom map %s. PII cols %s",
+                    cluster, database, config_map, os.environ['pii_cols'])
     """Return a connection to the database."""
     return Connection(
         cluster,

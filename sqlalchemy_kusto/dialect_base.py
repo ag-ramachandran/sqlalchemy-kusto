@@ -77,39 +77,9 @@ class KustoBaseDialect(default.DefaultDialect, ABC):
         "user_msi": str,
         "dev_mode": parse_bool_argument,
     }
-    additional_config_map = {}
-
     @classmethod
     def dbapi(cls) -> ModuleType:
         return sqlalchemy_kusto
-
-    def connect(self, *cargs, **cparams):
-        """Create a connection to the database."""
-        cluster = cparams.pop("cluster")
-        database = cparams.pop("database")
-        msi = cparams.pop("msi", False)
-        user_msi = cparams.pop("user_msi", None)
-        workload_identity = cparams.pop("workload_identity", False)
-        azure_ad_client_id = cparams.pop("azure_ad_client_id", None)
-        azure_ad_client_secret = cparams.pop("azure_ad_client_secret", None)
-        azure_ad_tenant_id = cparams.pop("azure_ad_tenant_id", None)
-        config_map = cparams.pop("config", {})
-        app_name = cparams.pop("custom_user_agent", config_map.pop("custom_user_agent","sqlalchemy-kusto"))
-        self.additional_config_map = config_map
-
-        logger.info("Connecting to cluster %s , Database %s , With custom map %s", cluster, database, self.additional_config_map)
-
-        return Connection(
-            cluster=cluster,
-            database=database,
-            msi=msi,
-            user_msi=user_msi,
-            workload_identity=workload_identity,
-            azure_ad_client_id=azure_ad_client_id,
-            azure_ad_client_secret=azure_ad_client_secret,
-            azure_ad_tenant_id=azure_ad_tenant_id,
-            app_name=app_name
-        )
 
     def create_connect_args(self, url: URL) -> tuple[list[Any], dict[str, Any]]:
         kwargs: dict[str, Any] = {
@@ -127,9 +97,8 @@ class KustoBaseDialect(default.DefaultDialect, ABC):
         return [], kwargs
 
     def get_schema_names(self, connection: Connection, **kwargs) -> list[str]:
-        database = connection.database
         query = (
-            f".show databases | where DatabaseName = {database} | project DatabaseName"
+            f".show databases |  project DatabaseName"
         )
         result = connection.execute(query)
         return [row.DatabaseName for row in result]

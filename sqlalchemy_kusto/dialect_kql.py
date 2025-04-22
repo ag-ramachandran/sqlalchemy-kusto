@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import re
 
 from sqlalchemy import Column, exc, sql
@@ -102,7 +104,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         from_linter=None,
         **kwargs,
     ):
-        logger.debug("Incoming query: %s. Sensitive columns :%s will be filtered ", select_stmt, self.config_map)
+        logger.debug("Incoming query: %s. ", select_stmt)
         compiled_query_lines = []
 
         from_object = select_stmt.get_final_froms()[0]
@@ -157,7 +159,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             )
         compiled_query_lines = list(filter(None, compiled_query_lines))
         compiled_query = "\n".join(compiled_query_lines)
-        logger.warning("Compiled query: %s", compiled_query)
+        logger.info("Compiled query: %s", compiled_query)
         return compiled_query
 
     def limit_clause(self, select, **kw):
@@ -195,6 +197,11 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
     def _get_projection_or_summarize(self, select: selectable.Select) -> dict[str, str]:
         """Builds the ending part of the query either project or summarize."""
+        pii_cols = os.environ.get('pii_cols',None)
+        pii_cols_set = set()
+        if pii_cols:
+            # Convert the value of 'pii_cols' into a set
+            pii_cols_set = set([KustoKqlCompiler._escape_and_quote_columns(cn) for cn in json.loads(pii_cols)])
         columns = select.inner_columns
         group_by_cols = select._group_by_clauses
         order_by_cols = select._order_by_clauses
@@ -259,6 +266,41 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 if projection_columns
                 else ""
             )
+
+            # projection_columns , extend_columns
+            # check if the columns in projection_columns and extend_columns are in  pii_cols_set
+
+            # Check if columns in projection_columns and extend_columns are in pii_cols_set
+            projection_check = set(projection_columns).intersection(pii_cols_set)
+            extend_check = extend_columns.intersection(pii_cols_set)
+            logger.info("------------------------------------------------------------")
+            logger.info("pii_cols_set %s" , ', '.join(pii_cols_set))
+            logger.info("Projection_Check %s off %s" , ', '.join(projection_check),', '.join(projection_columns))
+            logger.info("Extend_check %s off %s" , ', '.join(extend_check),', '.join(extend_columns))
+            logger.info("------------------------------------------------------------")
+
+            if projection_check or extend_check:
+                logger.info("Sensitive columns matched %s or %s", projection_check, extend_check)
+                # If they are, remove them from the projection and extend statements
+                projection_columns = [
+                    col for col in projection_columns if col not in projection_check
+                ]
+                extend_columns = [
+                    col for col in extend_columns if col not in extend_check
+                ]
+                # Add the remaining columns to the projection statement
+                project_statement = (
+                    f"| project {', '.join(projection_columns)}"
+                    if projection_columns
+                    else ""
+                )
+                # Add the remaining columns to the extend statement
+                extend_statement = (
+                    f"| extend {', '.join(sorted(extend_columns))}"
+                    if extend_columns
+                    else ""
+                )
+
         unwrapped_order_by = self._get_order_by(order_by_cols)
         sort_statement = (
             f"| order by {', '.join(unwrapped_order_by)}" if unwrapped_order_by else ""
@@ -664,8 +706,5 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 class KustoKqlHttpsDialect(KustoBaseDialect):
     name = "kustokql"
     statement_compiler = KustoKqlCompiler
-    logger.info("-------------------------------------------------")
-    logger.info(KustoBaseDialect.additional_config_map)
-    logger.info("-------------------------------------------------")
     preparer = KustoKqlIdentifierPreparer
     supports_statement_cache = True
