@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import re
 
 from sqlalchemy import Column, exc, sql
@@ -88,6 +90,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     visit_empty_set_expr = None
     visit_sequence = None
     sort_with_clause_parts = 2
+    pii_cols_set = None
 
     def visit_select(
         self,
@@ -101,7 +104,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         from_linter=None,
         **kwargs,
     ):
-        logger.debug("Incoming query: %s", select_stmt)
+        logger.debug("Incoming query: %s. ", select_stmt)
         compiled_query_lines = []
 
         from_object = select_stmt.get_final_froms()[0]
@@ -156,7 +159,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             )
         compiled_query_lines = list(filter(None, compiled_query_lines))
         compiled_query = "\n".join(compiled_query_lines)
-        logger.warning("Compiled query: %s", compiled_query)
+        logger.info("Compiled query: %s", compiled_query)
         return compiled_query
 
     def limit_clause(self, select, **kw):
@@ -251,6 +254,15 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     summarize_statement = (
                         f"{summarize_statement} by {', '.join(by_columns)}"
                     )
+            if self.pii_cols_set is not None:
+                # Check if columns in projection_columns and extend_columns are in pii_cols_set
+                projection_check = set(projection_columns).intersection(self.pii_cols_set)
+                extend_check = extend_columns.intersection(self.pii_cols_set)
+                logger.info("------------------------------------------------------------")
+                logger.info("pii_cols_set %s" , ', '.join(self.pii_cols_set))
+                logger.info("Projection_Check %s off %s" , ', '.join(projection_check),', '.join(projection_columns))
+                logger.info("Extend_check %s off %s" , ', '.join(extend_check),', '.join(extend_columns))
+                logger.info("------------------------------------------------------------")
             if extend_columns:
                 extend_statement = f"| extend {', '.join(sorted(extend_columns))}"
             project_statement = (
@@ -268,6 +280,15 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "project": project_statement,
             "sort": sort_statement,
         }
+
+    def _get_pii_cols(self):
+        if self.pii_cols_set is None:
+            pii_cols = os.environ.get('pii_cols', None)
+            if pii_cols:
+                # Convert the value of 'pii_cols' into a set
+                pii_cols = set([KustoKqlCompiler._escape_and_quote_columns(cn) for cn in json.loads(pii_cols)])
+                logger.info("Initialized pii_cols_set: %s", ', '.join(pii_cols))
+                self.pii_cols_set = pii_cols
 
     @staticmethod
     def _extract_maybe_agg_column_parts(column_name) -> str | None:

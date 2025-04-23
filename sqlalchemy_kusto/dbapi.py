@@ -201,6 +201,11 @@ class Cursor:
             raise errors.OperationalError(str(context_error)) from context_error
 
         rows = []
+        for row in server_response.tables:
+            print("**************************************************************")
+            #print(server_response.tables[0])
+            print(row)
+            print("**************************************************************")
         for row in server_response.primary_results[0]:
             rows.append(tuple(row.to_list()))
         self._results = rows
