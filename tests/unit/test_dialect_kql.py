@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import (
@@ -16,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.sql.selectable import TextAsFrom
 
 from sqlalchemy_kusto.dialect_kql import KustoKqlCompiler
+from sqlalchemy_kusto.dialect_kql_preprocess import SensitiveColumnError
 
 engine = create_engine("kustokql+https://localhost/testdb")
 
@@ -575,3 +578,51 @@ def test_schema_from_query(query_table_name: str, expected_table_name: str):
 
     query_expected = f"let inner_qry = ({expected_table_name});inner_qry| take 5"
     assert query_compiled == query_expected
+
+
+@pytest.mark.parametrize(
+    ("column_name", "column_alias", "is_failure"),
+    [
+        pytest.param("User_Id", "User_Id", True),
+        pytest.param("User_Id", "UI", True),
+        pytest.param("Device_Id", "DI", True),
+        pytest.param("User_Id", "", True),
+        pytest.param("Other_Id", "", False),
+    ],
+)
+def test_sensitive_column_failure(
+    column_name: str, column_alias: str, is_failure: bool
+):
+    # create a query from select_query_text creating clause
+    select_column = (
+        literal_column(column_name).label(column_alias)
+        if len(column_alias) > 0
+        else literal_column(column_name)
+    )
+    active_users_col = literal_column("ActiveUsers").label("ActiveUserMetric")
+    query = select([select_column, active_users_col]).select_from(
+        text("ActiveUsersLastMonth")
+    )
+
+    if is_failure:
+        with pytest.raises(
+            SensitiveColumnError,
+            match=f"Access to sensitive column '{column_name}' is prohibited.",
+        ):
+            query.compile(engine, compile_kwargs={"literal_binds": True})
+    else:
+        query_compiled = str(
+            query.compile(engine, compile_kwargs={"literal_binds": True})
+        ).replace("\n", "")
+        assert query_compiled == (
+            '["ActiveUsersLastMonth"]'
+            '| extend ["ActiveUserMetric"] = ["ActiveUsers"]'
+            '| project ["Other_Id"], ["ActiveUserMetric"]'
+        )
+
+
+@pytest.fixture(autouse=True)
+def run_around_tests():
+    os.environ["PII_COLS"] = "User_Id,Device_Id"
+    yield
+    os.environ.pop("PII_COLS", None)
