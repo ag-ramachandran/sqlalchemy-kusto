@@ -2,8 +2,9 @@ import logging
 import re
 
 from sqlalchemy import Column, exc, sql
-from sqlalchemy.sql import compiler, operators, selectable
+from sqlalchemy.sql import compiler, operators, selectable, visitors
 from sqlalchemy.sql.compiler import OPERATORS
+from sqlalchemy.sql.elements import ColumnClause, Label
 
 from sqlalchemy_kusto.dialect_base import KustoBaseDialect
 
@@ -80,6 +81,14 @@ class KustoKqlIdentifierPreparer(compiler.IdentifierPreparer):
     def __init__(self, dialect, **kw):
         super().__init__(dialect, initial_quote='["', final_quote='"]', **kw)
 
+
+def mask_sensitive_columns(expr):
+    is_column = isinstance(expr, ColumnClause) or isinstance(expr, Label)
+    logger.info("Is instance of column %s and name is %s. TypeOf %s",
+                is_column , expr.name , type(expr))
+    if is_column and expr.name in ['UserInfo_Id', 'email']:
+        return ColumnClause(f"'***MASKED***'").label(expr.name)  # masked and labeled
+    return expr
 
 class KustoKqlCompiler(compiler.SQLCompiler):
     OPERATORS[operators.and_] = " and "
@@ -216,8 +225,13 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             extend_columns = set()
             projection_columns = []
             for column in [c for c in columns if c.name != "*"]:
-                column_name, column_alias = self._extract_column_name_and_alias(column)
+                new_expr = visitors.replacement_traverse(column, {}, mask_sensitive_columns)
+                logger.info("************************************************************")
+                column_name, column_alias = self._extract_column_name_and_alias(new_expr)
                 column_alias = self._escape_and_quote_columns(column_alias, True)
+                logger.info("Masking sensitive columns: %s. With column_name %s and alias %s"
+                            , new_expr, column_name, column_alias)
+                logger.info("************************************************************")
                 # Do we have a group by clause ?
                 # Do we have aggregate columns ?
                 kql_agg = self._extract_maybe_agg_column_parts(column_name)
