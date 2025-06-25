@@ -1,6 +1,7 @@
 from collections import namedtuple
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional  # add for typing
 
+from azure.identity import DefaultAzureCredential
 from azure.kusto.data import ClientRequestProperties, KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data._models import KustoResultColumn
 from azure.kusto.data.exceptions import KustoAuthenticationError, KustoServiceError
@@ -13,7 +14,7 @@ def check_closed(func):
 
     def decorator(self, *args, **kwargs):
         if self.closed:
-            raise Exception("{klass} already closed".format(klass=self.__class__.__name__))
+            raise ValueError(f"{self.__class__.__name__} already closed")
         return func(self, *args, **kwargs)
 
     return decorator
@@ -23,8 +24,8 @@ def check_result(func):
     """Decorator that checks if the cursor has results from `execute`."""
 
     def decorator(self, *args, **kwargs):
-        if self._results is None:  # pylint: disable=protected-access
-            raise Exception("Called before `execute`")
+        if self._results is None:
+            raise ValueError("Called before `execute`")
         return func(self, *args, **kwargs)
 
     return decorator
@@ -34,16 +35,18 @@ def connect(
     cluster: str,
     database: str,
     msi: bool = False,
-    user_msi: str = None,
-    azure_ad_client_id: str = None,
-    azure_ad_client_secret: str = None,
-    azure_ad_tenant_id: str = None,
-):
+    user_msi: Optional[str] = None,
+    workload_identity: bool = False,
+    azure_ad_client_id: Optional[str] = None,
+    azure_ad_client_secret: Optional[str] = None,
+    azure_ad_tenant_id: Optional[str] = None,
+):  # pylint: disable=too-many-positional-arguments
     """Return a connection to the database."""
     return Connection(
         cluster,
         database,
         msi,
+        workload_identity,
         user_msi,
         azure_ad_client_id,
         azure_ad_client_secret,
@@ -59,21 +62,17 @@ class Connection:
         cluster: str,
         database: str,
         msi: bool = False,
-        user_msi: str = None,
-        azure_ad_client_id: str = None,
-        azure_ad_client_secret: str = None,
-        azure_ad_tenant_id: str = None,
+        workload_identity: bool = False,
+        user_msi: Optional[str] = None,
+        azure_ad_client_id: Optional[str] = None,
+        azure_ad_client_secret: Optional[str] = None,
+        azure_ad_tenant_id: Optional[str] = None,
     ):
         self.closed = False
-        self.cursors: List[Cursor] = []
+        self.cursors = []  # type: List[Cursor]
         kcsb = None
 
-        if msi:
-            # Managed Service Identity (MSI)
-            kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
-                cluster, client_id=user_msi
-            )
-        else:
+        if azure_ad_client_id and azure_ad_client_secret and azure_ad_tenant_id:
             # Service Principal auth
             kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
                 connection_string=cluster,
@@ -81,7 +80,22 @@ class Connection:
                 app_key=azure_ad_client_secret,
                 authority_id=azure_ad_tenant_id,
             )
-
+        elif workload_identity:
+            kcsb = KustoConnectionStringBuilder.with_azure_token_credential(cluster, DefaultAzureCredential())
+        elif msi:
+            # Managed Service Identity (MSI)
+            if user_msi is None or user_msi == "":
+                # System managed identity
+                kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(cluster)
+            else:
+                # user managed identity
+                kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
+                    cluster, client_id=user_msi
+                )
+        else:
+            # neither SP or MSI
+            kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster)
+        kcsb._set_connector_details("sqlalchemy-kusto", "1.1.0")
         self.kusto_client = KustoClient(kcsb)
         self.database = database
         self.properties = ClientRequestProperties()
@@ -89,7 +103,6 @@ class Connection:
     @check_closed
     def close(self):
         """Close the connection now. Kusto does not require to close the connection."""
-        self.closed = True
         for cursor in self.cursors:
             cursor.close()
 
@@ -137,15 +150,15 @@ class Cursor:
         database: str,
         properties: Optional[ClientRequestProperties] = None,
     ):
-        self._results: Optional[List[Tuple[Any, ...]]] = None
+        self._results = None  # type: Optional[List[Tuple[Any, ...]]]
         self.kusto_client = kusto_client
         self.database = database
         self.closed = False
-        self.description: Optional[List[CursorDescriptionRow]] = None
+        self.description = None  # type: Optional[List[CursorDescriptionRow]]
         self.current_item_index = 0
         self.properties = properties if properties is not None else ClientRequestProperties()
 
-    @property  # type: ignore
+    @property
     @check_result
     @check_closed
     def rowcount(self) -> int:
@@ -157,7 +170,6 @@ class Cursor:
     @check_closed
     def close(self):
         """Closes the cursor."""
-        self.closed = True
 
     @check_closed
     def execute(self, operation, parameters=None) -> "Cursor":
@@ -172,9 +184,9 @@ class Cursor:
         try:
             server_response = self.kusto_client.execute(self.database, query, self.properties)
         except KustoServiceError as kusto_error:
-            raise errors.DatabaseError(str(kusto_error))
+            raise errors.DatabaseError(str(kusto_error)) from kusto_error
         except KustoAuthenticationError as context_error:
-            raise errors.OperationalError(str(context_error))
+            raise errors.OperationalError(str(context_error)) from context_error
 
         rows = []
         for row in server_response.primary_results[0]:
@@ -185,7 +197,7 @@ class Cursor:
 
     @check_closed
     def executemany(self, operation, seq_of_parameters=None):
-        """Not supported"""
+        """Not supported."""
         raise NotImplementedError("`executemany` is not supported, use `execute` instead")
 
     @check_result
@@ -204,7 +216,7 @@ class Cursor:
 
     @check_result
     @check_closed
-    def fetchmany(self, size: int = None):
+    def fetchmany(self, size: Optional[int] = None):
         """
         Fetches the next set of rows of a query result, returning a sequence of
         sequences (e.g. a list of tuples). An empty sequence is returned when
@@ -229,15 +241,17 @@ class Cursor:
 
     @check_closed
     def setinputsizes(self, sizes):
-        """Not supported"""
+        """Not supported."""
 
     @check_closed
     def setoutputsizes(self, sizes):
-        """Not supported"""
+        """Not supported."""
 
     @staticmethod
-    def _get_description_from_columns(columns: List[KustoResultColumn]) -> List[CursorDescriptionRow]:
-        """Gets CursorDescriptionRow for Kusto columns"""
+    def _get_description_from_columns(
+        columns: List[KustoResultColumn],
+    ) -> List[CursorDescriptionRow]:
+        """Gets CursorDescriptionRow for Kusto columns."""
         return [
             CursorDescriptionRow(
                 name=column.column_name,
@@ -263,8 +277,8 @@ class Cursor:
     next = __next__
 
     @staticmethod
-    def _apply_parameters(operation, parameters) -> str:
-        """Applies parameters to operation string"""
+    def _apply_parameters(operation, parameters: dict) -> str:
+        """Applies parameters to operation string."""
         if not parameters:
             return operation
 
@@ -272,13 +286,12 @@ class Cursor:
         return operation % escaped_parameters
 
     @staticmethod
-    def _escape(value) -> str:
+    def _escape(value: Any) -> str:
         """
         Escape the parameter value.
 
         Note that bool is a subclass of int so order of statements matter.
         """
-
         if value == "*":
             return value
         if isinstance(value, str):

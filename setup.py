@@ -5,8 +5,8 @@ DESCRIPTION = "Azure Data Explorer (Kusto) dialect for SQLAlchemy"
 VERSION = "1.1.0"
 
 REQUIREMENTS = [
-    "azure-kusto-data==2.1.1",
-    "sqlalchemy==1.3.24",
+    "azure-kusto-data==4.*",
+    "sqlalchemy==1.4.*",
 ]
 EXTRAS = {
     "dev": [

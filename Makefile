@@ -5,7 +5,7 @@
 # Environment variables
 ##############################################################################
 VENV_DIR = .venv
-PYTHON=${VENV_DIR}/bin/python
+PYTHON=${VENV_DIR}/bin/python3.7
 
 ##############################################################################
 # Development set up

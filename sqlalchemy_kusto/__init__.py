@@ -1,6 +1,4 @@
 from sqlalchemy_kusto.dbapi import connect
-
-# pylint: disable=redefined-builtin
 from sqlalchemy_kusto.errors import (
     DatabaseError,
     DataError,
@@ -11,7 +9,6 @@ from sqlalchemy_kusto.errors import (
     NotSupportedError,
     OperationalError,
     ProgrammingError,
-    Warning,
 )
 
 __all__ = [
@@ -28,10 +25,18 @@ __all__ = [
     "NotSupportedError",
     "OperationalError",
     "ProgrammingError",
-    "Warning",
 ]
 
-apilevel = "2.0"  # pylint: disable=invalid-name
-# Threads may share the module and connections
-threadsafety = 2  # pylint: disable=invalid-name
-paramstyle = "pyformat"  # pylint: disable=invalid-name
+
+# Rename custom Warning to avoid conflict with built-in
+class KustoWarning(Exception):
+    pass
+
+
+APILEVEL = "2.0"
+THREADSAFETY = 1
+PARAMSTYLE = "pyformat"
+
+# Add paramstyle attribute for SQLAlchemy DBAPI compatibility
+
+paramstyle = "pyformat"

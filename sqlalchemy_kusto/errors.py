@@ -2,10 +2,6 @@ class Error(Exception):
     pass
 
 
-class Warning(Exception):  # pylint: disable-msg=redefined-builtin
-    pass
-
-
 class InterfaceError(Error):
     pass
 
@@ -35,4 +31,9 @@ class DataError(DatabaseError):
 
 
 class NotSupportedError(DatabaseError):
+    pass
+
+
+# Rename custom Warning to avoid conflict with built-in
+class KustoWarning(Exception):
     pass
