@@ -5,16 +5,17 @@ DESCRIPTION = "Azure Data Explorer (Kusto) dialect for SQLAlchemy"
 VERSION = "1.1.1"
 
 REQUIREMENTS = [
-    #"azure-kusto-data==4.*",
-    "azure-kusto-data==2.1.1",
+    "azure-kusto-data==4.*",
+     #"azure-kusto-data==2.1.1",
     "sqlalchemy==1.3.24",
+    "azure-core==1.22.1",
 ]
 EXTRAS = {
     "dev": [
-        "black>=21.12b0",
-        "isort>=5.10.1",
-        "mypy>=0.9.30",
-        "pylint>=2.12.2",
+        # "black>=21.12b0",
+        # "isort>=5.10.1",
+        # "mypy>=0.9.30",
+        # "pylint>=2.12.2",
         "pytest>=6.2.5",
         "python-dotenv>=0.19.2",
     ]
