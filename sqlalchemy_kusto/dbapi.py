@@ -34,20 +34,26 @@ def connect(
     cluster: str,
     database: str,
     msi: bool = False,
-    user_msi: str = None,
-    azure_ad_client_id: str = None,
-    azure_ad_client_secret: str = None,
-    azure_ad_tenant_id: str = None,
+    user_msi: str  = None,
+    workload_identity: bool = False,
+    azure_ad_client_id: str  = None,
+    azure_ad_client_secret: str  = None,
+    azure_ad_tenant_id: str  = None,
+    app_name: str  = "Superset",
+    app_version: str  = "2.1.0",
 ):
     """Return a connection to the database."""
     return Connection(
         cluster,
         database,
         msi,
+        workload_identity,
         user_msi,
         azure_ad_client_id,
         azure_ad_client_secret,
         azure_ad_tenant_id,
+        app_name,
+        app_version,
     )
 
 
@@ -59,10 +65,13 @@ class Connection:
         cluster: str,
         database: str,
         msi: bool = False,
-        user_msi: str = None,
-        azure_ad_client_id: str = None,
-        azure_ad_client_secret: str = None,
-        azure_ad_tenant_id: str = None,
+        workload_identity: bool = False,
+        user_msi: str  = None,
+        azure_ad_client_id: str  = None,
+        azure_ad_client_secret: str  = None,
+        azure_ad_tenant_id: str  = None,
+        app_name: str  = None,
+        app_version: str  = None,
     ):
         self.closed = False
         self.cursors: List[Cursor] = []
@@ -73,7 +82,7 @@ class Connection:
             kcsb = KustoConnectionStringBuilder.with_aad_managed_service_identity_authentication(
                 cluster, client_id=user_msi
             )
-        else:
+        elif azure_ad_client_id and azure_ad_client_secret and azure_ad_tenant_id :
             # Service Principal auth
             kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
                 connection_string=cluster,
@@ -81,12 +90,9 @@ class Connection:
                 app_key=azure_ad_client_secret,
                 authority_id=azure_ad_tenant_id,
             )
-        kcsb._set_connector_details(
-            "sqlalchemy-kusto",
-            "1.1.0",
-            "superset",
-            "2.x",
-        )
+        else :
+            # Default authentication method
+            kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster)
         self.kusto_client = KustoClient(kcsb)
         self.database = database
         self.properties = ClientRequestProperties()
