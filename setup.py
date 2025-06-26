@@ -6,7 +6,7 @@ VERSION = "1.1.1"
 
 REQUIREMENTS = [
     #"azure-kusto-data==4.*",
-    "azure-kusto-data==3.*",
+    "azure-kusto-data==2.1.1",
     "sqlalchemy==1.3.24",
 ]
 EXTRAS = {
