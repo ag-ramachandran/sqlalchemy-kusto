@@ -81,7 +81,12 @@ class Connection:
                 app_key=azure_ad_client_secret,
                 authority_id=azure_ad_tenant_id,
             )
-
+        kcsb._set_connector_details(
+            "sqlalchemy-kusto",
+            "1.1.0",
+            "superset",
+            "2.x",
+        )
         self.kusto_client = KustoClient(kcsb)
         self.database = database
         self.properties = ClientRequestProperties()
@@ -91,7 +96,8 @@ class Connection:
         """Close the connection now. Kusto does not require to close the connection."""
         self.closed = True
         for cursor in self.cursors:
-            cursor.close()
+            if not cursor.closed:
+                cursor.close()
 
     @check_closed
     def commit(self):
