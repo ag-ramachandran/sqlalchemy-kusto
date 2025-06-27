@@ -93,6 +93,7 @@ class Connection:
         else :
             # Default authentication method
             kcsb = KustoConnectionStringBuilder.with_az_cli_authentication(cluster)
+        kcsb._set_connector_details("sqlalchemy-kusto", "1.1.0","Superset","2.1.0")
         self.kusto_client = KustoClient(kcsb)
         self.database = database
         self.properties = ClientRequestProperties()
