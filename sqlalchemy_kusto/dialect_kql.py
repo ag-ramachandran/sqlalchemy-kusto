@@ -141,6 +141,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     where_clause_reformatted
                 )
                 compiled_query_lines.append(f"| where {converted_where_clause}")
+        if projections_parts_dict.get("predicate_if"):
+            compiled_query_lines.append(
+                f"| where {projections_parts_dict.pop('predicate_if')}"
+            )
 
         if "extend" in projections_parts_dict:
             compiled_query_lines.append(projections_parts_dict.pop("extend"))
@@ -211,6 +215,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         #     - Do the columns have aliases ? --Yes---> Extend with aliases
         #                |
         #                N---> Add to projection
+        where_if_cols = set()
         if columns is not None:
             summarize_columns = set()
             extend_columns = set()
@@ -226,6 +231,11 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     summarize_columns.add(
                         self._build_column_projection(kql_agg, column_alias)
                     )
+                if kql_agg and str(kql_agg).__contains__("if("):
+                    #extract the part within the braces
+                    parts = KustoKqlCompiler._extract_columns_and_predicate(kql_agg)
+                    if parts and parts[1]:
+                        where_if_cols.add(parts[1])
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
@@ -267,14 +277,13 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "summarize": summarize_statement,
             "project": project_statement,
             "sort": sort_statement,
+            "predicate_if": " and ".join(where_if_cols) if where_if_cols else "",
         }
 
     @staticmethod
     def _extract_maybe_agg_column_parts(column_name) -> str | None:
         match_agg_cols = re.match(AGGREGATE_PATTERN, column_name, re.IGNORECASE)
         if match_agg_cols and match_agg_cols.groups():
-            # Check if the aggregate function is count_distinct. This is case from superset
-            # where we can use count(distinct or count_distinct)
             aggregate_func, distinct_keyword, agg_column_name, extra_params = (
                 match_agg_cols.groups()
             )
@@ -599,7 +608,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
         Examples:
             - schema.table                -> database("schema").["table"]
-            - schema."table.name"         -> database("schema").{"table.name"]
+            - schema."table.name"         -> database("schema").{"table.name"}
             - "schema.name".table         -> database("schema.name").["table"]
             - "schema.name"."table.name"  -> database("schema.name").["table.name"]
             - "schema name"."table name"  -> database("schema name").["table name"]
@@ -665,6 +674,52 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 f"{aggregation_function}({column_name_escaped}{extra_params})"
             )
         return return_value
+
+    @staticmethod
+    def _extract_columns_and_predicate(call: str):
+        """
+        Given a function call string like:
+          covariancepif(x, y, x % 3 == 0)
+          countif(DamageCrops >0)
+          sumif(a,DamageCrops >0)
+        Returns (columns: list[str], predicate: str|None)
+        """
+        import re
+        # Find the argument list
+        m = re.match(r"(\w+)\s*\((.*)\)", call)
+        if not m:
+            return [], None
+        args_str = m.group(2)
+        # Split args, respecting nested parentheses
+        args = []
+        current = ''
+        depth = 0
+        for c in args_str:
+            if c == ',' and depth == 0:
+                args.append(current.strip())
+                current = ''
+            else:
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                current += c
+        if current.strip():
+            args.append(current.strip())
+        # Predicate detection: look for comparison operators
+        predicate_ops = ['==', '!=', '>=', '<=', '>', '<', ' in ', ' not in ', ' is ', ' like ', ' between ']
+        def is_predicate(s):
+            return any(op in s for op in predicate_ops)
+        if not args:
+            return [], None
+        # If only one arg and it's a predicate
+        if len(args) == 1 and is_predicate(args[0]):
+            return [], args[0]
+        # If last arg is a predicate
+        if is_predicate(args[-1]):
+            return args[:-1], args[-1]
+        # Otherwise, no predicate
+        return args, None
 
 
 class KustoKqlHttpsDialect(KustoBaseDialect):

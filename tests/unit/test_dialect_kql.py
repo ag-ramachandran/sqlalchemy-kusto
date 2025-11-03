@@ -263,10 +263,18 @@ def test_percentile_by_text():
     assert query_compiled == query_expected
 
 
-def test_dcountif_by_text():
-    event_col = literal_column(
-        "dcountif(year, city == 'Paris' or city in ('Madrid'))"
-    ).label("Measure 1")
+@pytest.mark.parametrize(
+    ("f", "query_expected"),
+    [
+        pytest.param("dcountif(year, city == 'Paris' or city in ('Madrid'))", '["SalesData"]| where city == \'Paris\' or city in (\'Madrid\')| summarize ["Measure 1"] = dcountif(["year"], city == \'Paris\' or city in (\'Madrid\')) | project ["Measure 1"]'),
+        pytest.param("countif(id, type != 'FMCG')", '["SalesData"]| where type != \'FMCG\'| summarize ["Measure 1"] = countif(["id"], type != \'FMCG\') | project ["Measure 1"]'),
+        pytest.param("avgif(age, age >= 20)", '["SalesData"]| where age >= 20| summarize ["Measure 1"] = avgif(["age"], age >= 20) | project ["Measure 1"]'),
+        pytest.param("sumif(sales_amount, sales_amount < 1000 and (sales_history!='c' or is_new==true))", '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| summarize ["Measure 1"] = sumif(["sales_amount"], sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | project ["Measure 1"]'),
+        pytest.param("covarianceif(sales_amount, tax, sales_amount < 1000 and (sales_history!='c' or is_new==true))", '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| summarize ["Measure 1"] = covarianceif(["sales_amount"], ["tax"], sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | project ["Measure 1"]'),
+    ],
+)
+def test_agg_if_by(f,query_expected):
+    event_col = literal_column(f).label("Measure 1")
     query = select(
         [
             event_col,
@@ -275,12 +283,7 @@ def test_dcountif_by_text():
     query_compiled = str(
         query.compile(engine, compile_kwargs={"literal_binds": True})
     ).replace("\n", "")
-    # raw query text from query
-    query_expected = (
-        '["SalesData"]'
-        "| summarize [\"Measure 1\"] = dcountif([\"year\"], city == 'Paris' or city in ('Madrid')) "
-        '| project ["Measure 1"]'
-    )
+    # raw query text from query - predicate is now extracted to WHERE clause
     assert query_compiled == query_expected
 
 
@@ -296,9 +299,10 @@ def test_countif_by_text():
     query_compiled = str(
         query.compile(engine, compile_kwargs={"literal_binds": True})
     ).replace("\n", "")
-    # raw query text from query
+    # raw query text from query - predicate is now extracted to WHERE clause
     query_expected = (
         '["SalesData"]'
+        "| where city == 'Paris' OR city in ('Madrid')"
         "| summarize [\"Measure 1\"] = countif(city == 'Paris' OR city in ('Madrid')) "
         '| project ["Measure 1"]'
     )
@@ -541,7 +545,7 @@ def test_schema_from_metadata(
     ],
 )
 def test_match_aggregates(column_name: str, expected_aggregate: str):
-    kql_agg = KustoKqlCompiler._extract_maybe_agg_column_parts(column_name)
+    kql_agg, predicate = KustoKqlCompiler._extract_maybe_agg_column_parts(column_name)
     if expected_aggregate:
         assert kql_agg is not None
         assert kql_agg == expected_aggregate
