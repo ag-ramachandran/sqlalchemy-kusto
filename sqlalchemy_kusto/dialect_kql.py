@@ -282,13 +282,17 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         }
 
     @staticmethod
-    def _format_kql_aggregate_with_escaped_columns(func_name: str, columns: list[str], predicate: str | None) -> str:
+    def _format_kql_aggregate_with_escaped_columns(
+        func_name: str, columns: list[str], predicate: str | None
+    ) -> str:
+        """Formats a KQL aggregate function with properly escaped column names.
+
+        For example: covarianceif(sales_amount, tax, predicate) -> covarianceif(["sales_amount"], ["tax"], predicate).
+        For countif with only predicate: countif(predicate) -> countif(predicate).
         """
-        Formats a KQL aggregate function with properly escaped column names.
-        For example: covarianceif(sales_amount, tax, predicate) -> covarianceif(["sales_amount"], ["tax"], predicate)
-        For countif with only predicate: countif(predicate) -> countif(predicate)
-        """
-        escaped_columns = [KustoKqlCompiler._escape_and_quote_columns(col) for col in columns if col]
+        escaped_columns = [
+            KustoKqlCompiler._escape_and_quote_columns(col) for col in columns if col
+        ]
         if predicate and escaped_columns:
             return f"{func_name}({', '.join(escaped_columns)}, {predicate})"
         elif predicate:
@@ -308,25 +312,41 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             # KQL-specific functions end with "if" or have multiple parameters with predicates
             func_lower = aggregate_func.lower()
             is_kql_specific = func_lower.endswith("if") or func_lower in {
-                "covariance", "covariancep", "percentile", "percentiles",
-                "arg_max", "arg_min", "buildschema", "make_bag", "make_list",
-                "hll", "hll_merge", "tdigest", "tdigest_merge", "merge_tdigest",
-                "binary_all_and", "binary_all_or", "binary_all_xor",
-                "percentilew", "percentilesw"
+                "covariance",
+                "covariancep",
+                "percentile",
+                "percentiles",
+                "arg_max",
+                "arg_min",
+                "buildschema",
+                "make_bag",
+                "make_list",
+                "hll",
+                "hll_merge",
+                "tdigest",
+                "tdigest_merge",
+                "merge_tdigest",
+                "binary_all_and",
+                "binary_all_or",
+                "binary_all_xor",
+                "percentilew",
+                "percentilesw",
             }
-            
+
             if is_kql_specific and func_lower in kql_aggregates:
                 # Treat as KQL native aggregate - format with escaped columns
-                columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(column_name)
-                formatted_agg = KustoKqlCompiler._format_kql_aggregate_with_escaped_columns(
-                    func_lower, columns, predicate
+                columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(
+                    column_name
+                )
+                formatted_agg = (
+                    KustoKqlCompiler._format_kql_aggregate_with_escaped_columns(
+                        func_lower, columns, predicate
+                    )
                 )
                 return formatted_agg, predicate
-            
+
             # Otherwise, treat as SQL aggregate that needs conversion
-            is_distinct = (
-                bool(distinct_keyword) or func_lower == "count_distinct"
-            )
+            is_distinct = bool(distinct_keyword) or func_lower == "count_distinct"
             kql_agg = KustoKqlCompiler._sql_to_kql_aggregate(
                 func_lower, agg_column_name, is_distinct, extra_params
             )
@@ -342,7 +362,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         maybe_aggregation_function = column_name.lower().split("(")[0]
         if maybe_aggregation_function in kql_aggregates:
             # Extract columns and predicate for KQL native aggregates
-            columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(column_name)
+            columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(
+                column_name
+            )
             # Format the aggregate with properly escaped column names
             formatted_agg = KustoKqlCompiler._format_kql_aggregate_with_escaped_columns(
                 maybe_aggregation_function, columns, predicate
@@ -726,15 +748,15 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         return return_value
 
     @staticmethod
-    def _extract_columns_and_predicate(call: str):
-        """
+    def _extract_columns_and_predicate(call: str) -> tuple[list[str], str | None]:
+        """Extracts columns and predicate from a function call string.
+
         Given a function call string like:
           covariancepif(x, y, x % 3 == 0)
           countif(DamageCrops >0)
           sumif(a,DamageCrops >0)
-        Returns (columns: list[str], predicate: str|None)
+        Returns (columns: list[str], predicate: str|None).
         """
-        import re
         # Find the argument list
         m = re.match(r"(\w+)\s*\((.*)\)", call)
         if not m:
@@ -742,24 +764,38 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         args_str = m.group(2)
         # Split args, respecting nested parentheses
         args = []
-        current = ''
+        current = ""
         depth = 0
         for c in args_str:
-            if c == ',' and depth == 0:
+            if c == "," and depth == 0:
                 args.append(current.strip())
-                current = ''
+                current = ""
             else:
-                if c == '(':
+                if c == "(":
                     depth += 1
-                elif c == ')':
+                elif c == ")":
                     depth -= 1
                 current += c
         if current.strip():
             args.append(current.strip())
         # Predicate detection: look for comparison operators
-        predicate_ops = ['==', '!=', '>=', '<=', '>', '<', ' in ', ' not in ', ' is ', ' like ', ' between ']
+        predicate_ops = [
+            "==",
+            "!=",
+            ">=",
+            "<=",
+            ">",
+            "<",
+            " in ",
+            " not in ",
+            " is ",
+            " like ",
+            " between ",
+        ]
+
         def is_predicate(s):
             return any(op in s for op in predicate_ops)
+
         if not args:
             return [], None
         # If only one arg and it's a predicate
