@@ -69,6 +69,28 @@ kql_aggregates = {
     "varianceif",
     "variancep",
 }
+# KQL aggregates that typically have multiple parameters (not simple SQL-style aggregates)
+kql_multi_param_aggregates = {
+    "covariance",
+    "covariancep",
+    "percentile",
+    "percentiles",
+    "arg_max",
+    "arg_min",
+    "buildschema",
+    "make_bag",
+    "make_list",
+    "hll",
+    "hll_merge",
+    "tdigest",
+    "tdigest_merge",
+    "merge_tdigest",
+    "binary_all_and",
+    "binary_all_or",
+    "binary_all_xor",
+    "percentilew",
+    "percentilesw",
+}
 AGGREGATE_PATTERN = r"(\w+)\s*\(\s*(DISTINCT|distinct\s*)?\(?\s*(\*|\[?\"?\'?\w+\"?\]?)\s*(,.+)*\)?\s*\)"
 
 
@@ -309,29 +331,11 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 match_agg_cols.groups()
             )
             # Check if this is actually a KQL native aggregate function (not a simple SQL aggregate)
-            # KQL-specific functions end with "if" or have multiple parameters with predicates
+            # KQL-specific functions end with "if" or are multi-parameter aggregates
             func_lower = aggregate_func.lower()
-            is_kql_specific = func_lower.endswith("if") or func_lower in {
-                "covariance",
-                "covariancep",
-                "percentile",
-                "percentiles",
-                "arg_max",
-                "arg_min",
-                "buildschema",
-                "make_bag",
-                "make_list",
-                "hll",
-                "hll_merge",
-                "tdigest",
-                "tdigest_merge",
-                "merge_tdigest",
-                "binary_all_and",
-                "binary_all_or",
-                "binary_all_xor",
-                "percentilew",
-                "percentilesw",
-            }
+            is_kql_specific = (
+                func_lower.endswith("if") or func_lower in kql_multi_param_aggregates
+            )
 
             if is_kql_specific and func_lower in kql_aggregates:
                 # Treat as KQL native aggregate - format with escaped columns
