@@ -34,6 +34,10 @@ kql_aggregates = {
     "count_distinct",
     "count_distinctif",
     "countif",
+    "covariance",
+    "covarianceif",
+    "covariancep",
+    "covariancepif",
     "dcount",
     "dcountif",
     "hll",
@@ -225,17 +229,14 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 column_alias = self._escape_and_quote_columns(column_alias, True)
                 # Do we have a group by clause ?
                 # Do we have aggregate columns ?
-                kql_agg = self._extract_maybe_agg_column_parts(column_name)
+                kql_agg, predicate = self._extract_maybe_agg_column_parts(column_name)
                 if kql_agg:
                     has_aggregates = True
                     summarize_columns.add(
                         self._build_column_projection(kql_agg, column_alias)
                     )
-                if kql_agg and str(kql_agg).__contains__("if("):
-                    #extract the part within the braces
-                    parts = KustoKqlCompiler._extract_columns_and_predicate(kql_agg)
-                    if parts and parts[1]:
-                        where_if_cols.add(parts[1])
+                    if predicate:
+                        where_if_cols.add(predicate)
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
@@ -281,25 +282,74 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         }
 
     @staticmethod
-    def _extract_maybe_agg_column_parts(column_name) -> str | None:
+    def _format_kql_aggregate_with_escaped_columns(func_name: str, columns: list[str], predicate: str | None) -> str:
+        """
+        Formats a KQL aggregate function with properly escaped column names.
+        For example: covarianceif(sales_amount, tax, predicate) -> covarianceif(["sales_amount"], ["tax"], predicate)
+        For countif with only predicate: countif(predicate) -> countif(predicate)
+        """
+        escaped_columns = [KustoKqlCompiler._escape_and_quote_columns(col) for col in columns if col]
+        if predicate and escaped_columns:
+            return f"{func_name}({', '.join(escaped_columns)}, {predicate})"
+        elif predicate:
+            # Only predicate, no columns
+            return f"{func_name}({predicate})"
+        return f"{func_name}({', '.join(escaped_columns)})"
+
+    @staticmethod
+    def _extract_maybe_agg_column_parts(column_name) -> tuple[str | None, str | None]:
+        # Try to match SQL-style aggregates that need conversion first
         match_agg_cols = re.match(AGGREGATE_PATTERN, column_name, re.IGNORECASE)
         if match_agg_cols and match_agg_cols.groups():
             aggregate_func, distinct_keyword, agg_column_name, extra_params = (
                 match_agg_cols.groups()
             )
+            # Check if this is actually a KQL native aggregate function (not a simple SQL aggregate)
+            # KQL-specific functions end with "if" or have multiple parameters with predicates
+            func_lower = aggregate_func.lower()
+            is_kql_specific = func_lower.endswith("if") or func_lower in {
+                "covariance", "covariancep", "percentile", "percentiles",
+                "arg_max", "arg_min", "buildschema", "make_bag", "make_list",
+                "hll", "hll_merge", "tdigest", "tdigest_merge", "merge_tdigest",
+                "binary_all_and", "binary_all_or", "binary_all_xor",
+                "percentilew", "percentilesw"
+            }
+            
+            if is_kql_specific and func_lower in kql_aggregates:
+                # Treat as KQL native aggregate - format with escaped columns
+                columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(column_name)
+                formatted_agg = KustoKqlCompiler._format_kql_aggregate_with_escaped_columns(
+                    func_lower, columns, predicate
+                )
+                return formatted_agg, predicate
+            
+            # Otherwise, treat as SQL aggregate that needs conversion
             is_distinct = (
-                bool(distinct_keyword) or aggregate_func.casefold() == "count_distinct"
+                bool(distinct_keyword) or func_lower == "count_distinct"
             )
             kql_agg = KustoKqlCompiler._sql_to_kql_aggregate(
-                aggregate_func.lower(), agg_column_name, is_distinct, extra_params
+                func_lower, agg_column_name, is_distinct, extra_params
             )
-            return kql_agg
+            # Extract predicate if this is an aggregate with "if(" pattern
+            predicate = None
+            if kql_agg and "if(" in kql_agg:
+                parts = KustoKqlCompiler._extract_columns_and_predicate(kql_agg)
+                if parts and parts[1]:
+                    predicate = parts[1]
+            return kql_agg, predicate
 
+        # Check if it's a KQL native aggregate that didn't match AGGREGATE_PATTERN
         maybe_aggregation_function = column_name.lower().split("(")[0]
         if maybe_aggregation_function in kql_aggregates:
-            return column_name
+            # Extract columns and predicate for KQL native aggregates
+            columns, predicate = KustoKqlCompiler._extract_columns_and_predicate(column_name)
+            # Format the aggregate with properly escaped column names
+            formatted_agg = KustoKqlCompiler._format_kql_aggregate_with_escaped_columns(
+                maybe_aggregation_function, columns, predicate
+            )
+            return formatted_agg, predicate
 
-        return None
+        return None, None
 
     def _get_order_by(self, order_by_cols):
         unwrapped_order_by = []
