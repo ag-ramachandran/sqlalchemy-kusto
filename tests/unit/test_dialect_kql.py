@@ -271,13 +271,13 @@ def test_percentile_by_text():
             (
                 "[\"SalesData\"]| where city == 'Paris' or city in ('Madrid')| "
                 "summarize [\"Measure 1\"] = dcountif([\"year\"], city == 'Paris' or city in ('Madrid')) | "
-                "project [\"Measure 1\"]"
+                'project ["Measure 1"]'
             ),
         ),
         pytest.param(
             "countif(id, type != 'FMCG')",
             (
-                '["SalesData"]| where type != \'FMCG\'| '
+                "[\"SalesData\"]| where type != 'FMCG'| "
                 'summarize ["Measure 1"] = countif(["id"], type != \'FMCG\') | '
                 'project ["Measure 1"]'
             ),
@@ -293,9 +293,9 @@ def test_percentile_by_text():
         pytest.param(
             "sumif(sales_amount, sales_amount < 1000 and (sales_history!='c' or is_new==true))",
             (
-                '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| '
+                "[\"SalesData\"]| where sales_amount < 1000 and (sales_history!='c' or is_new==true)| "
                 'summarize ["Measure 1"] = sumif(["sales_amount"], '
-                'sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | '
+                "sales_amount < 1000 and (sales_history!='c' or is_new==true)) | "
                 'project ["Measure 1"]'
             ),
         ),

@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import Any
 
 from sqlalchemy import Column, exc, sql
 from sqlalchemy.sql import compiler, operators, selectable
@@ -219,7 +220,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         extend_statement = ""
         project_statement = ""
         has_aggregates = False
-        where_if_cols = set()
+        where_if_cols: set[str] = set()
 
         if columns is not None:
             column_data = self._process_columns(columns)
@@ -234,7 +235,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             if has_aggregates or bool(by_columns):
                 summarize_statement = f"| summarize {', '.join(summarize_columns)} "
                 if by_columns:
-                    summarize_statement = f"{summarize_statement} by {', '.join(by_columns)}"
+                    summarize_statement = (
+                        f"{summarize_statement} by {', '.join(by_columns)}"
+                    )
             if extend_columns:
                 extend_statement = f"| extend {', '.join(sorted(extend_columns))}"
             project_statement = (
@@ -254,7 +257,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "predicate_if": " and ".join(where_if_cols) if where_if_cols else "",
         }
 
-    def _process_columns(self, columns) -> dict[str, any]:
+    def _process_columns(self, columns) -> dict[str, Any]:
         """Process columns and return data structures for summarize, extend, and project."""
         summarize_columns = set()
         extend_columns = set()
@@ -271,7 +274,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
             if is_conditional_aggregate:
                 has_aggregates = True
-                predicate = self._extract_predicate_from_conditional_agg(column_name, kql_agg)
+                predicate = self._extract_predicate_from_conditional_agg(
+                    column_name, kql_agg
+                )
                 if predicate:
                     where_if_cols.add(predicate)
 
@@ -306,7 +311,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 return True
         return False
 
-    def _extract_predicate_from_conditional_agg(self, column_name: str, kql_agg: str | None) -> str | None:
+    def _extract_predicate_from_conditional_agg(
+        self, column_name: str, kql_agg: str | None
+    ) -> str | None:
         """Extract predicate from conditional aggregate function."""
         parts = (
             self._extract_columns_and_predicate(kql_agg)
