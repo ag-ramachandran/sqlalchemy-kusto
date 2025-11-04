@@ -65,6 +65,19 @@ kql_aggregates = {
     "varianceif",
     "variancep",
 }
+conditional_aggregates = {
+    "minif",
+    "sumif",
+    "maxif",
+    "avgif",
+    "dcountif",
+    "stdevif",
+    "varianceif",
+    "countif",  # No arity
+    "covariancepif",  # 3 arity
+    "covarianceif",  # 3 arity
+}
+
 AGGREGATE_PATTERN = r"(\w+)\s*\(\s*(DISTINCT|distinct\s*)?\(?\s*(\*|\[?\"?\'?\w+\"?\]?)\s*(,.+)*\)?\s*\)"
 
 
@@ -141,6 +154,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     where_clause_reformatted
                 )
                 compiled_query_lines.append(f"| where {converted_where_clause}")
+
         if projections_parts_dict.get("predicate_if"):
             compiled_query_lines.append(
                 f"| where {projections_parts_dict.pop('predicate_if')}"
@@ -205,6 +219,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         extend_statement = ""
         project_statement = ""
         has_aggregates = False
+        where_if_cols = set()
         # The following is the logic
         # With Columns :
         #     - Do we have a group by clause ? --Yes---> Do we have aggregate columns ? --Yes--> Summarize new column(s)
@@ -215,10 +230,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         #     - Do the columns have aliases ? --Yes---> Extend with aliases
         #                |
         #                N---> Add to projection
-        where_if_cols = set()
         if columns is not None:
             summarize_columns = set()
             extend_columns = set()
+            aggregate_func = None
             projection_columns = []
             for column in [c for c in columns if c.name != "*"]:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
@@ -226,16 +241,29 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 # Do we have a group by clause ?
                 # Do we have aggregate columns ?
                 kql_agg = self._extract_maybe_agg_column_parts(column_name)
+                is_conditional_aggregate = False
+
+                for fn in conditional_aggregates:
+                    if column_name.lower().__contains__(fn):
+                        is_conditional_aggregate = True
+                        break
+
+                if is_conditional_aggregate:
+                    has_aggregates = True
+                    # extract the part within the braces. The conditional is for cases with multi arity functions
+                    # to extract kql_agg from the regex or from the column_name itself
+                    parts = (
+                        self._extract_columns_and_predicate(kql_agg)
+                        if kql_agg
+                        else self._extract_columns_and_predicate(column_name)
+                    )
+                    if parts and parts[1]:
+                        where_if_cols.add(parts[1])
                 if kql_agg:
                     has_aggregates = True
                     summarize_columns.add(
                         self._build_column_projection(kql_agg, column_alias)
                     )
-                if kql_agg and str(kql_agg).__contains__("if("):
-                    #extract the part within the braces
-                    parts = KustoKqlCompiler._extract_columns_and_predicate(kql_agg)
-                    if parts and parts[1]:
-                        where_if_cols.add(parts[1])
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
@@ -284,6 +312,8 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     def _extract_maybe_agg_column_parts(column_name) -> str | None:
         match_agg_cols = re.match(AGGREGATE_PATTERN, column_name, re.IGNORECASE)
         if match_agg_cols and match_agg_cols.groups():
+            # Check if the aggregate function is count_distinct. This is case from superset
+            # where we can use count(distinct or count_distinct)
             aggregate_func, distinct_keyword, agg_column_name, extra_params = (
                 match_agg_cols.groups()
             )
@@ -608,7 +638,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
         Examples:
             - schema.table                -> database("schema").["table"]
-            - schema."table.name"         -> database("schema").{"table.name"}
+            - schema."table.name"         -> database("schema").{"table.name"]
             - "schema.name".table         -> database("schema.name").["table"]
             - "schema.name"."table.name"  -> database("schema.name").["table.name"]
             - "schema name"."table name"  -> database("schema name").["table name"]
@@ -685,6 +715,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         Returns (columns: list[str], predicate: str|None)
         """
         import re
+
         # Find the argument list
         m = re.match(r"(\w+)\s*\((.*)\)", call)
         if not m:
@@ -692,24 +723,38 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         args_str = m.group(2)
         # Split args, respecting nested parentheses
         args = []
-        current = ''
+        current = ""
         depth = 0
         for c in args_str:
-            if c == ',' and depth == 0:
+            if c == "," and depth == 0:
                 args.append(current.strip())
-                current = ''
+                current = ""
             else:
-                if c == '(':
+                if c == "(":
                     depth += 1
-                elif c == ')':
+                elif c == ")":
                     depth -= 1
                 current += c
         if current.strip():
             args.append(current.strip())
         # Predicate detection: look for comparison operators
-        predicate_ops = ['==', '!=', '>=', '<=', '>', '<', ' in ', ' not in ', ' is ', ' like ', ' between ']
+        predicate_ops = [
+            "==",
+            "!=",
+            ">=",
+            "<=",
+            ">",
+            "<",
+            " in ",
+            " not in ",
+            " is ",
+            " like ",
+            " between ",
+        ]
+
         def is_predicate(s):
             return any(op in s for op in predicate_ops)
+
         if not args:
             return [], None
         # If only one arg and it's a predicate
