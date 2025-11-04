@@ -220,75 +220,21 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         project_statement = ""
         has_aggregates = False
         where_if_cols = set()
-        # The following is the logic
-        # With Columns :
-        #     - Do we have a group by clause ? --Yes---> Do we have aggregate columns ? --Yes--> Summarize new column(s)
-        #                |                                   |                                        with by clause
-        #                N                                   N --> Add to projection
-        #                |
-        #                |
-        #     - Do the columns have aliases ? --Yes---> Extend with aliases
-        #                |
-        #                N---> Add to projection
+
         if columns is not None:
-            summarize_columns = set()
-            extend_columns = set()
-            aggregate_func = None
-            projection_columns = []
-            for column in [c for c in columns if c.name != "*"]:
-                column_name, column_alias = self._extract_column_name_and_alias(column)
-                column_alias = self._escape_and_quote_columns(column_alias, True)
-                # Do we have a group by clause ?
-                # Do we have aggregate columns ?
-                kql_agg = self._extract_maybe_agg_column_parts(column_name)
-                is_conditional_aggregate = False
+            column_data = self._process_columns(columns)
+            summarize_columns = column_data["summarize_columns"]
+            extend_columns = column_data["extend_columns"]
+            projection_columns = column_data["projection_columns"]
+            has_aggregates = column_data["has_aggregates"]
+            where_if_cols = column_data["where_if_cols"]
 
-                for fn in conditional_aggregates:
-                    if column_name.lower().__contains__(fn):
-                        is_conditional_aggregate = True
-                        break
-
-                if is_conditional_aggregate:
-                    has_aggregates = True
-                    # extract the part within the braces. The conditional is for cases with multi arity functions
-                    # to extract kql_agg from the regex or from the column_name itself
-                    parts = (
-                        self._extract_columns_and_predicate(kql_agg)
-                        if kql_agg
-                        else self._extract_columns_and_predicate(column_name)
-                    )
-                    if parts and parts[1]:
-                        where_if_cols.add(parts[1])
-                if kql_agg:
-                    has_aggregates = True
-                    summarize_columns.add(
-                        self._build_column_projection(kql_agg, column_alias)
-                    )
-                # No group by clause
-                # Do the columns have aliases ?
-                # Add additional and to handle case where : SELECT column_name as column_name
-                elif column_alias and column_alias != column_name:
-                    extend_columns.add(
-                        self._build_column_projection(column_name, column_alias, True)
-                    )
-                if column_alias:
-                    projection_columns.append(
-                        self._escape_and_quote_columns(column_alias, True)
-                    )
-                else:
-                    projection_columns.append(
-                        self._escape_and_quote_columns(column_name)
-                    )
             # group by columns
             by_columns = self._group_by(group_by_cols)
-            if has_aggregates or bool(
-                by_columns
-            ):  # Summarize can happen with or without aggregate being created
+            if has_aggregates or bool(by_columns):
                 summarize_statement = f"| summarize {', '.join(summarize_columns)} "
                 if by_columns:
-                    summarize_statement = (
-                        f"{summarize_statement} by {', '.join(by_columns)}"
-                    )
+                    summarize_statement = f"{summarize_statement} by {', '.join(by_columns)}"
             if extend_columns:
                 extend_statement = f"| extend {', '.join(sorted(extend_columns))}"
             project_statement = (
@@ -307,6 +253,67 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "sort": sort_statement,
             "predicate_if": " and ".join(where_if_cols) if where_if_cols else "",
         }
+
+    def _process_columns(self, columns) -> dict[str, any]:
+        """Process columns and return data structures for summarize, extend, and project."""
+        summarize_columns = set()
+        extend_columns = set()
+        projection_columns = []
+        has_aggregates = False
+        where_if_cols = set()
+
+        for column in [c for c in columns if c.name != "*"]:
+            column_name, column_alias = self._extract_column_name_and_alias(column)
+            column_alias = self._escape_and_quote_columns(column_alias, True)
+
+            kql_agg = self._extract_maybe_agg_column_parts(column_name)
+            is_conditional_aggregate = self._is_conditional_aggregate(column_name)
+
+            if is_conditional_aggregate:
+                has_aggregates = True
+                predicate = self._extract_predicate_from_conditional_agg(column_name, kql_agg)
+                if predicate:
+                    where_if_cols.add(predicate)
+
+            if kql_agg:
+                has_aggregates = True
+                summarize_columns.add(
+                    self._build_column_projection(kql_agg, column_alias)
+                )
+            elif column_alias and column_alias != column_name:
+                extend_columns.add(
+                    self._build_column_projection(column_name, column_alias, True)
+                )
+
+            projection_columns.append(
+                self._escape_and_quote_columns(column_alias, True)
+                if column_alias
+                else self._escape_and_quote_columns(column_name)
+            )
+
+        return {
+            "summarize_columns": summarize_columns,
+            "extend_columns": extend_columns,
+            "projection_columns": projection_columns,
+            "has_aggregates": has_aggregates,
+            "where_if_cols": where_if_cols,
+        }
+
+    def _is_conditional_aggregate(self, column_name: str) -> bool:
+        """Check if column_name contains a conditional aggregate function."""
+        for fn in conditional_aggregates:
+            if column_name.lower().__contains__(fn):
+                return True
+        return False
+
+    def _extract_predicate_from_conditional_agg(self, column_name: str, kql_agg: str | None) -> str | None:
+        """Extract predicate from conditional aggregate function."""
+        parts = (
+            self._extract_columns_and_predicate(kql_agg)
+            if kql_agg
+            else self._extract_columns_and_predicate(column_name)
+        )
+        return parts[1] if parts and parts[1] else None
 
     @staticmethod
     def _extract_maybe_agg_column_parts(column_name) -> str | None:
@@ -706,16 +713,14 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         return return_value
 
     @staticmethod
-    def _extract_columns_and_predicate(call: str):
+    def _extract_columns_and_predicate(call: str) -> tuple[list[str], str | None]:
         """
         Given a function call string like:
           covariancepif(x, y, x % 3 == 0)
           countif(DamageCrops >0)
           sumif(a,DamageCrops >0)
-        Returns (columns: list[str], predicate: str|None)
+        Returns (columns: list[str], predicate: str|None).
         """
-        import re
-
         # Find the argument list
         m = re.match(r"(\w+)\s*\((.*)\)", call)
         if not m:
