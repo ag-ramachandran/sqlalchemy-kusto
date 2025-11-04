@@ -268,25 +268,38 @@ def test_percentile_by_text():
     [
         pytest.param(
             "dcountif(year, city == 'Paris' or city in ('Madrid'))",
-            "[\"SalesData\"]| where city == 'Paris' or city in ('Madrid')| summarize [\"Measure 1\"] = dcountif([\"year\"], city == 'Paris' or city in ('Madrid')) | project [\"Measure 1\"]",
+            (
+                "[\"SalesData\"]| where city == 'Paris' or city in ('Madrid')| "
+                "summarize [\"Measure 1\"] = dcountif([\"year\"], city == 'Paris' or city in ('Madrid')) | "
+                "project [\"Measure 1\"]"
+            ),
         ),
         pytest.param(
             "countif(id, type != 'FMCG')",
-            '["SalesData"]| where type != \'FMCG\'| summarize ["Measure 1"] = countif(["id"], type != \'FMCG\') | project ["Measure 1"]',
+            (
+                '["SalesData"]| where type != \'FMCG\'| '
+                'summarize ["Measure 1"] = countif(["id"], type != \'FMCG\') | '
+                'project ["Measure 1"]'
+            ),
         ),
         pytest.param(
             "avgif(age, age >= 20)",
-            '["SalesData"]| where age >= 20| summarize ["Measure 1"] = avgif(["age"], age >= 20) | project ["Measure 1"]',
+            (
+                '["SalesData"]| where age >= 20| '
+                'summarize ["Measure 1"] = avgif(["age"], age >= 20) | '
+                'project ["Measure 1"]'
+            ),
         ),
         pytest.param(
             "sumif(sales_amount, sales_amount < 1000 and (sales_history!='c' or is_new==true))",
-            '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| summarize ["Measure 1"] = sumif(["sales_amount"], sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | project ["Measure 1"]',
+            (
+                '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| '
+                'summarize ["Measure 1"] = sumif(["sales_amount"], '
+                'sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | '
+                'project ["Measure 1"]'
+            ),
         ),
         # TODO: enable once covarianceif is supported. This is multi arity and will need a fix in the code
-        # pytest.param(
-        #     "covarianceif(sales_amount, tax, sales_amount < 1000 and (sales_history!='c' or is_new==true))",
-        #     '["SalesData"]| where sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)| summarize ["Measure 1"] = covarianceif(sales_amount, tax, sales_amount < 1000 and (sales_history!=\'c\' or is_new==true)) | project ["Measure 1"]',
-        # ),
     ],
 )
 def test_agg_if_by(f, query_expected):
