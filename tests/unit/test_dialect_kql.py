@@ -346,10 +346,12 @@ def test_agg_if_by(f, query_expected):
         pytest.param(
             [
                 literal_column("dcountif(id, type != 'FMCG')").label("Measure 1"),
-                literal_column("sumif(sales_amount, sales_amount < 1000)").label("Measure 2"),
+                literal_column("sumif(sales_amount, sales_amount < 1000)").label(
+                    "Measure 2"
+                ),
             ],
             (
-                '["SalesData"]| where sales_amount < 1000 or type != \'FMCG\''
+                "[\"SalesData\"]| where sales_amount < 1000 or type != 'FMCG'"
                 '| summarize ["Measure 1"] = dcountif(["id"], type != \'FMCG\'), '
                 '["Measure 2"] = sumif(["sales_amount"], sales_amount < 1000) '
                 '| project ["Measure 1"], ["Measure 2"]'
