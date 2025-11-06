@@ -267,18 +267,10 @@ def test_percentile_by_text():
     ("f", "query_expected"),
     [
         pytest.param(
-            "dcountif(year, city == 'Paris' or city in ('Madrid'))",
-            (
-                "[\"SalesData\"]| where city == 'Paris' or city in ('Madrid')| "
-                "summarize [\"Measure 1\"] = dcountif([\"year\"], city == 'Paris' or city in ('Madrid')) | "
-                'project ["Measure 1"]'
-            ),
-        ),
-        pytest.param(
-            "countif(id, type != 'FMCG')",
+            "countif(type != 'FMCG')",
             (
                 "[\"SalesData\"]| where type != 'FMCG'| "
-                'summarize ["Measure 1"] = countif(["id"], type != \'FMCG\') | '
+                "summarize [\"Measure 1\"] = countif(type != 'FMCG') | "
                 'project ["Measure 1"]'
             ),
         ),
@@ -299,6 +291,25 @@ def test_percentile_by_text():
                 'project ["Measure 1"]'
             ),
         ),
+        pytest.param(
+            (
+                """dcountif(["Channel"],iff(SID == 27, 'Partner',iff(SID == 28, 'Dealer',"""
+                """iff(SID == 1415 and Experience == 'mw', 'Online', iff(SID == 49, 'CrossSell',"""
+                """iff(SID == 50, 'Kiosk',iff(SID == 1415 and Experience == 'react-web-client', """
+                """'Misc', '')))))) in ('CrossSell','Dealer','Online','Partner','Kiosk','Misc'))"""
+            ),
+            (
+                """["SalesData"]| where iff(SID == 27, 'Partner',iff(SID == 28, 'Dealer',"""
+                """iff(SID == 1415 and Experience == 'mw', 'Online', iff(SID == 49, 'CrossSell',"""
+                """iff(SID == 50, 'Kiosk',iff(SID == 1415 and Experience == 'react-web-client', """
+                """'Misc', '')))))) in ('CrossSell','Dealer','Online','Partner','Kiosk','Misc')"""
+                """| summarize ["Measure 1"] = dcountif(["Channel"],iff(SID == 27, 'Partner',"""
+                """iff(SID == 28, 'Dealer',iff(SID == 1415 and Experience == 'mw', 'Online', """
+                """iff(SID == 49, 'CrossSell',iff(SID == 50, 'Kiosk',"""
+                """iff(SID == 1415 and Experience == 'react-web-client', 'Misc', '')))))) """
+                """in ('CrossSell','Dealer','Online','Partner','Kiosk','Misc')) | project ["Measure 1"]"""
+            ),
+        ),
         # TODO: enable once covarianceif is supported. This is multi arity and will need a fix in the code
     ],
 )
@@ -309,9 +320,11 @@ def test_agg_if_by(f, query_expected):
             event_col,
         ]
     ).select_from(text("SalesData"))
-    query_compiled = str(
-        query.compile(engine, compile_kwargs={"literal_binds": True})
-    ).replace("\n", "")
+    query_compiled = (
+        str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+        .replace("\n", "")
+        .replace("\t", "")
+    )
     # raw query text from query - predicate is now extracted to WHERE clause
     assert query_compiled == query_expected
 

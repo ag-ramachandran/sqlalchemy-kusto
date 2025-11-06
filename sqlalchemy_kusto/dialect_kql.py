@@ -81,6 +81,8 @@ conditional_aggregates = {
 
 AGGREGATE_PATTERN = r"(\w+)\s*\(\s*(DISTINCT|distinct\s*)?\(?\s*(\*|\[?\"?\'?\w+\"?\]?)\s*(,.+)*\)?\s*\)"
 
+min_call_parts = 2  # Minimum parts in a conditional aggregate call when split by '(' (e.g., countif(xyz) has 2 parts)
+
 
 class UniversalSet:
     def __contains__(self, item):
@@ -254,7 +256,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "summarize": summarize_statement,
             "project": project_statement,
             "sort": sort_statement,
-            "predicate_if": " and ".join(where_if_cols) if where_if_cols else "",
+            "predicate_if": " or ".join(where_if_cols) if where_if_cols else "",
         }
 
     def _process_columns(self, columns) -> dict[str, Any]:
@@ -271,19 +273,17 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
             kql_agg = self._extract_maybe_agg_column_parts(column_name)
             is_conditional_aggregate = self._is_conditional_aggregate(column_name)
-
+            extract_base = (kql_agg if kql_agg else column_name).replace("\n", "")
             if is_conditional_aggregate:
                 has_aggregates = True
-                predicate = self._extract_predicate_from_conditional_agg(
-                    column_name, kql_agg
-                )
+                cols, predicate = self._extract_columns_and_predicate(extract_base)
                 if predicate:
                     where_if_cols.add(predicate)
 
-            if kql_agg:
+            if kql_agg or is_conditional_aggregate:
                 has_aggregates = True
                 summarize_columns.add(
-                    self._build_column_projection(kql_agg, column_alias)
+                    self._build_column_projection(extract_base, column_alias)
                 )
             elif column_alias and column_alias != column_name:
                 extend_columns.add(
@@ -304,23 +304,13 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "where_if_cols": where_if_cols,
         }
 
-    def _is_conditional_aggregate(self, column_name: str) -> bool:
+    @staticmethod
+    def _is_conditional_aggregate(column_name: str) -> bool:
         """Check if column_name contains a conditional aggregate function."""
         for fn in conditional_aggregates:
             if column_name.lower().__contains__(fn):
                 return True
         return False
-
-    def _extract_predicate_from_conditional_agg(
-        self, column_name: str, kql_agg: str | None
-    ) -> str | None:
-        """Extract predicate from conditional aggregate function."""
-        parts = (
-            self._extract_columns_and_predicate(kql_agg)
-            if kql_agg
-            else self._extract_columns_and_predicate(column_name)
-        )
-        return parts[1] if parts and parts[1] else None
 
     @staticmethod
     def _extract_maybe_agg_column_parts(column_name) -> str | None:
@@ -652,7 +642,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
         Examples:
             - schema.table                -> database("schema").["table"]
-            - schema."table.name"         -> database("schema").{"table.name"]
             - "schema.name".table         -> database("schema.name").["table"]
             - "schema.name"."table.name"  -> database("schema.name").["table.name"]
             - "schema name"."table name"  -> database("schema name").["table name"]
@@ -720,63 +709,25 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         return return_value
 
     @staticmethod
-    def _extract_columns_and_predicate(call: str) -> tuple[list[str], str | None]:
-        """
-        Given a function call string like:
-          covariancepif(x, y, x % 3 == 0)
-          countif(DamageCrops >0)
-          sumif(a,DamageCrops >0)
-        Returns (columns: list[str], predicate: str|None).
-        """
-        # Find the argument list
-        m = re.match(r"(\w+)\s*\((.*)\)", call)
-        if not m:
-            return [], None
-        args_str = m.group(2)
-        # Split args, respecting nested parentheses
-        args = []
-        current = ""
-        depth = 0
-        for c in args_str:
-            if c == "," and depth == 0:
-                args.append(current.strip())
-                current = ""
+    def _extract_columns_and_predicate(
+        extract_base: str,
+    ) -> tuple[list[str], str | None]:
+        call_parts = extract_base.split("(")
+        if call_parts and len(call_parts) >= min_call_parts:
+            function_name = call_parts[0].strip()
+            if function_name == "countif":
+                parts_match = re.search(r"\((.*)\)", extract_base)
+                if not parts_match:
+                    return [], None
+                predicate = parts_match.group(1).strip()
+                return [], predicate
             else:
-                if c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth -= 1
-                current += c
-        if current.strip():
-            args.append(current.strip())
-        # Predicate detection: look for comparison operators
-        predicate_ops = [
-            "==",
-            "!=",
-            ">=",
-            "<=",
-            ">",
-            "<",
-            " in ",
-            " not in ",
-            " is ",
-            " like ",
-            " between ",
-        ]
-
-        def is_predicate(s):
-            return any(op in s for op in predicate_ops)
-
-        if not args:
-            return [], None
-        # If only one arg and it's a predicate
-        if len(args) == 1 and is_predicate(args[0]):
-            return [], args[0]
-        # If last arg is a predicate
-        if is_predicate(args[-1]):
-            return args[:-1], args[-1]
-        # Otherwise, no predicate
-        return args, None
+                match = re.search(r"(\w+)\s*\(\s*([^,]+)\s*,\s*(.+)\)", extract_base)
+                if not match:
+                    return [], None
+                function_name, columns, predicate = match.groups()
+                return columns.split(","), predicate
+        return [], None
 
 
 class KustoKqlHttpsDialect(KustoBaseDialect):
