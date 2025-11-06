@@ -235,7 +235,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             # group by columns
             by_columns = self._group_by(group_by_cols)
             if has_aggregates or bool(by_columns):
-                summarize_statement = f"| summarize {', '.join(summarize_columns)} "
+                summarize_statement = (
+                    f"| summarize {', '.join(sorted(summarize_columns))} "
+                )
                 if by_columns:
                     summarize_statement = (
                         f"{summarize_statement} by {', '.join(by_columns)}"
@@ -256,7 +258,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             "summarize": summarize_statement,
             "project": project_statement,
             "sort": sort_statement,
-            "predicate_if": " or ".join(where_if_cols) if where_if_cols else "",
+            "predicate_if": " or ".join(sorted(where_if_cols)) if where_if_cols else "",
         }
 
     def _process_columns(self, columns) -> dict[str, Any]:

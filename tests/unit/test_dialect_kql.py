@@ -329,6 +329,63 @@ def test_agg_if_by(f, query_expected):
     assert query_compiled == query_expected
 
 
+@pytest.mark.parametrize(
+    ("columns", "query_expected"),
+    [
+        pytest.param(
+            [
+                literal_column("avgif(age, age >= 20)").label("M1"),
+                literal_column("minif(prev, prev <= post)").label("M2"),
+            ],
+            (
+                '["SalesData"]| where age >= 20 or prev <= post'
+                '| summarize ["M1"] = avgif(["age"], age >= 20), ["M2"] = minif(["prev"], prev <= post) '
+                '| project ["M1"], ["M2"]'
+            ),
+        ),
+        pytest.param(
+            [
+                literal_column("dcountif(id, type != 'FMCG')").label("Measure 1"),
+                literal_column("sumif(sales_amount, sales_amount < 1000)").label("Measure 2"),
+            ],
+            (
+                '["SalesData"]| where sales_amount < 1000 or type != \'FMCG\''
+                '| summarize ["Measure 1"] = dcountif(["id"], type != \'FMCG\'), '
+                '["Measure 2"] = sumif(["sales_amount"], sales_amount < 1000) '
+                '| project ["Measure 1"], ["Measure 2"]'
+            ),
+        ),
+        pytest.param(
+            [
+                literal_column("countif(city == 'Paris' or city == 'Bordeaux' )").label(
+                    "FR Count"
+                ),
+                literal_column(
+                    "countif((city == 'Madrid' or city == 'Barcelona'))"
+                ).label("ES Count"),
+                literal_column("count(*)").label("Total Count"),
+            ],
+            (
+                """["SalesData"]| where (city == 'Madrid' or city == 'Barcelona') or """
+                """city == 'Paris' or city == 'Bordeaux'| summarize """
+                """["ES Count"] = countif((city == 'Madrid' or city == 'Barcelona')), """
+                """["FR Count"] = countif(city == 'Paris' or city == 'Bordeaux' ), """
+                """["Total Count"] = count() | project ["FR Count"], ["ES Count"], ["Total Count"]"""
+            ),
+        ),
+    ],
+)
+def test_multi_agg_if_by(columns, query_expected):
+    query = select(columns).select_from(text("SalesData"))
+    query_compiled = (
+        str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+        .replace("\n", "")
+        .replace("\t", "")
+    )
+    # raw query text from query - predicate is now extracted to WHERE clause
+    assert query_compiled == query_expected
+
+
 def test_countif_by_text():
     event_col = literal_column("countif(city == 'Paris' OR city in ('Madrid'))").label(
         "Measure 1"
