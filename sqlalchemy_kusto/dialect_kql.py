@@ -142,9 +142,15 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 )
                 compiled_query_lines.append(f"| where {converted_where_clause}")
 
+        # Add summarize first if it exists
+        if "summarize" in projections_parts_dict:
+            compiled_query_lines.append(projections_parts_dict.pop("summarize"))
+
+        # Then add extend after summarize
         if "extend" in projections_parts_dict:
             compiled_query_lines.append(projections_parts_dict.pop("extend"))
 
+        # Add remaining parts (project, sort)
         for statement_part in projections_parts_dict.values():
             if statement_part:
                 compiled_query_lines.append(statement_part)
