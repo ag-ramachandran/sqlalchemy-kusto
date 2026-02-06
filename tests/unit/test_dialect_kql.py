@@ -175,9 +175,10 @@ def test_group_by_text():
     ).replace("\n", "")
     # raw query text from query
     query_expected = (
-        '["ActiveUsersLastMonth"]| extend ["ActiveUserMetric"] = ["ActiveUsers"], '
-        '["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
+        '["ActiveUsersLastMonth"]'
         '| summarize   by ["EventInfo_Time"] / time(1d)'
+        '| extend ["ActiveUserMetric"] = ["ActiveUsers"], '
+        '["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["ActiveUserMetric"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -224,20 +225,19 @@ def test_group_by_text_vaccine_dataset():
         query.compile(engine, compile_kwargs={"literal_binds": True})
     ).replace("\n", "")
     query_expected = (
-        'database("superset").["CovidVaccineData"]| '
-        'extend ["country_name"] = ["country_name"]| '
-        'summarize   by ["country_name"]| '
-        'project ["country_name"]| order by ["country_name"] asc'
+        'database("superset").["CovidVaccineData"]'
+        '| summarize   by ["country_name"]'
+        '| extend ["country_name"] = ["country_name"]'
+        '| project ["country_name"]'
+        '| order by ["country_name"] asc'
     )
     assert query_compiled == query_expected
 
 
 def test_is_kql_function():
-    assert KustoKqlCompiler._is_kql_function(
-        """case(Size <= 3, "Small",
+    assert KustoKqlCompiler._is_kql_function("""case(Size <= 3, "Small",
                        Size <= 10, "Medium",
-                       "Large")"""
-    )
+                       "Large")""")
     assert KustoKqlCompiler._is_kql_function("""bin(time(16d), 7d)""")
     assert KustoKqlCompiler._is_kql_function(
         """iff((EventType in ("Heavy Rain", "Flash Flood", "Flood")), "Rain event", "Not rain event")"""
@@ -328,8 +328,8 @@ def test_distinct_count_by_text():
     # raw query text from query
     query_expected = (
         '["ActiveUsersLastMonth"]'
-        '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
+        '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["DistinctUsers"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -354,8 +354,8 @@ def test_distinct_count_alt_by_text():
     # raw query text from query
     query_expected = (
         '["ActiveUsersLastMonth"]'
-        '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
+        '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["DistinctUsers"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -547,6 +547,28 @@ def test_match_aggregates(column_name: str, expected_aggregate: str):
         assert kql_agg == expected_aggregate
     else:
         assert kql_agg is None
+
+
+def test_calculated_measure_with_adhoc_measure_and_constant():
+    """Test calculated measure with an ad hoc measure and a constant.
+
+    Measure 1 = count(*), Measure 2 = "Measure 1" * 2
+    Measure 2 should compile to ["Measure 1"] * 2
+    The extend clause must come after summarize for this to work.
+    """
+    measure_1 = literal_column("count(*)").label("Measure 1")
+    measure_2 = literal_column('"Measure 1" * 2').label("Measure 2")
+    query = select([measure_1, measure_2]).select_from(text("SalesData"))
+    query_compiled = str(
+        query.compile(engine, compile_kwargs={"literal_binds": True})
+    ).replace("\n", "")
+    query_expected = (
+        '["SalesData"]'
+        '| summarize ["Measure 1"] = count() '
+        '| extend ["Measure 2"] = ["Measure 1"] * 2'
+        '| project ["Measure 1"], ["Measure 2"]'
+    )
+    assert query_compiled == query_expected
 
 
 @pytest.mark.parametrize(
