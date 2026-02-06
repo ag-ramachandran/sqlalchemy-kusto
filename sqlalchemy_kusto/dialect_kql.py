@@ -362,11 +362,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             or KustoKqlCompiler._is_number_literal(name)
         ) and not is_alias:
             return name
-        # Check if already wrapped in ["ColumnName"] (escaped format)
+        # First, check if the name is already wrapped in ["ColumnName"] (escaped format)
         if name.startswith('["') and name.endswith('"]'):
             return name  # Return as is if already properly escaped
         # Handle arithmetic expressions by recursively escaping both sides
-        # Check for operators BEFORE stripping quotes to handle "Measure 1" + "Measure 2"
         if not is_alias:
             for operator in ["/", "+", "-", "*"]:
                 # Find operator that's not inside quotes
