@@ -107,7 +107,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         from_object = select_stmt.get_final_froms()[0]
         if hasattr(from_object, "element"):
             query = self._get_most_inner_element(from_object.element)
-            (main, lets) = self._extract_let_statements(query.text)
+            main, lets = self._extract_let_statements(query.text)
             compiled_query_lines.extend(lets)
             compiled_query_lines.append(
                 f"let {from_object.name} = ({self._convert_schema_in_statement(main)});"
@@ -362,28 +362,40 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             or KustoKqlCompiler._is_number_literal(name)
         ) and not is_alias:
             return name
-        if name.startswith('"') and name.endswith('"'):
-            name = name[1:-1]
-        # First, check if the name is already wrapped in ["ColumnName"] (escaped format)
+        # Check if already wrapped in ["ColumnName"] (escaped format)
         if name.startswith('["') and name.endswith('"]'):
             return name  # Return as is if already properly escaped
-        # Remove surrounding spaces
-        # Handle mathematical operations (wrap only the column part before operators)
-        # Find the position of the first operator or space that separates the column name
+        # Handle arithmetic expressions by recursively escaping both sides
+        # Check for operators BEFORE stripping quotes to handle "Measure 1" + "Measure 2"
         if not is_alias:
             for operator in ["/", "+", "-", "*"]:
-                if operator in name:
-                    # Split the name at the first operator and wrap the left part
-                    parts = name.split(operator, 1)
-                    # Remove quotes if they exist at the edges
-                    col_part = parts[0].strip()
-                    if col_part.startswith('"') and col_part.endswith('"'):
-                        col_part = col_part[1:-1].strip()
-                    col_part = col_part.replace('"', '\\"')
-                    return f'["{col_part}"] {operator} {parts[1].strip()}'  # Wrap the column part
-        # No operators found, just wrap the entire name
+                # Find operator that's not inside quotes
+                pos = KustoKqlCompiler._find_operator_outside_quotes(name, operator)
+                if pos != -1:
+                    left_part = name[:pos].strip()
+                    right_part = name[pos + 1 :].strip()
+                    # Recursively escape both sides
+                    left_escaped = KustoKqlCompiler._escape_and_quote_columns(left_part)
+                    right_escaped = KustoKqlCompiler._escape_and_quote_columns(
+                        right_part
+                    )
+                    return f"{left_escaped} {operator} {right_escaped}"
+        # No operators found - strip surrounding quotes if present, then wrap
+        if name.startswith('"') and name.endswith('"'):
+            name = name[1:-1]
         name = name.replace('"', '\\"')
         return f'["{name}"]'
+
+    @staticmethod
+    def _find_operator_outside_quotes(text: str, operator: str) -> int:
+        """Find position of operator that's not inside quoted strings. Returns -1 if not found."""
+        in_quotes = False
+        for i, ch in enumerate(text):
+            if ch == '"' and (i == 0 or text[i - 1] != "\\"):
+                in_quotes = not in_quotes
+            elif ch == operator and not in_quotes:
+                return i
+        return -1
 
     @staticmethod
     def _sql_to_kql_where(where_clause: str) -> str:
@@ -553,7 +565,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
     @staticmethod
     def _is_number_literal(s: str) -> bool:
-        pattern = r"^[0-9]+$"
+        pattern = r"^\d+(\.\d+)?$"
         return bool(re.match(pattern, s))
 
     def _get_most_inner_element(self, clause):
