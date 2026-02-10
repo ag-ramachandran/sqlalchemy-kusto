@@ -366,8 +366,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             summarize_columns = []
             extend_columns = []
             projection_columns = []
-            # Track intermediary measures (should not appear in project)
-            intermediary_aliases = set()
             # Track existing aggregates: kql_agg (lowercase) -> ref_name
             # This allows reuse of already-defined aggregates
             existing_aggs: dict[str, str] = {}
@@ -418,7 +416,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                             )
                             if summarize_entry not in summarize_columns:
                                 summarize_columns.append(summarize_entry)
-                            intermediary_aliases.add(ref_name)
 
                     # Build extend entry (common for both cases)
                     escaped_expr = self._escape_and_quote_columns(column_name)
@@ -445,10 +442,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             if extend_columns:
                 extend_statement = f"| extend {', '.join(extend_columns)}"
 
-            # Filter out intermediary aliases from projection
-            projection_columns = [
-                p for p in projection_columns if p not in intermediary_aliases
-            ]
             project_statement = (
                 f"| project {', '.join(projection_columns)}"
                 if projection_columns
