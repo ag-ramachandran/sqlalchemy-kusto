@@ -366,10 +366,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             summarize_columns = []
             extend_columns = []
             projection_columns = []
-            # Track existing aggregates: kql_agg (lowercase) -> ref_name
-            # This allows reuse of already-defined aggregates
             existing_aggs: dict[str, str] = {}
-
             for column in [c for c in columns if c.name != "*"]:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
                 column_alias = self._escape_and_quote_columns(column_alias, True)
