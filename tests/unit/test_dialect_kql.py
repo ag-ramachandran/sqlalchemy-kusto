@@ -429,7 +429,8 @@ def test_select_count():
         'let inner_qry = (["logs"]);'
         "inner_qry"
         "| where Field1 > 1 and Field2 < 2"
-        '| summarize ["total-count"] = count() '
+        '| summarize ["__total-count_1"] = count() '
+        '| extend ["total-count"] = ["__total-count_1"]'
         '| project ["total-count"]'
         '| order by ["total-count"] desc'
         "| take 5"
@@ -640,8 +641,8 @@ def test_calculated_measure_with_adhoc_measure_and_constant():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["Measure 1"] = count() '
-        '| extend ["Measure 2"] = ["Measure 1"] * 2'
+        '| summarize ["__Measure 1_1"] = count() '
+        '| extend ["Measure 1"] = ["__Measure 1_1"], ["Measure 2"] = ["Measure 1"] * 2'
         '| project ["Measure 1"], ["Measure 2"]'
     )
     assert query_compiled == query_expected
@@ -662,8 +663,8 @@ def test_calculated_measure_with_two_adhoc_measures_and_aggregates():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["Measure 1"] = count(), ["Measure 2"] = count() '
-        '| extend ["Measure 3"] = ["Measure 1"] + ["Measure 2"]'
+        '| summarize ["__Measure 1_1"] = count() '
+        '| extend ["Measure 1"] = ["__Measure 1_1"], ["Measure 2"] = ["__Measure 1_1"], ["Measure 3"] = ["Measure 1"] + ["Measure 2"]'
         '| project ["Measure 1"], ["Measure 2"], ["Measure 3"]'
     )
     assert query_compiled == query_expected
@@ -708,8 +709,8 @@ def test_calculated_measure_with_mixed_aggregates_and_references():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["Predefined 1"] = count(), ["__Calculated_1"] = count(["b"]) '
-        '| extend ["Calculated"] = ["Predefined 1"] + ["__Calculated_1"]'
+        '| summarize ["__Predefined 1_1"] = count(), ["__Calculated_1"] = count(["b"]) '
+        '| extend ["Predefined 1"] = ["__Predefined 1_1"], ["Calculated"] = ["Predefined 1"] + ["__Calculated_1"]'
         '| project ["Predefined 1"], ["Calculated"]'
     )
     assert query_compiled == query_expected
