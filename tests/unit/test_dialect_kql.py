@@ -429,8 +429,7 @@ def test_select_count():
         'let inner_qry = (["logs"]);'
         "inner_qry"
         "| where Field1 > 1 and Field2 < 2"
-        '| summarize ["__total-count_1"] = count() '
-        '| extend ["total-count"] = ["__total-count_1"]'
+        '| summarize ["total-count"] = count() '
         '| project ["total-count"]'
         '| order by ["total-count"] desc'
         "| take 5"
@@ -631,7 +630,7 @@ def test_calculated_measure_with_adhoc_measure_and_constant():
     """Test calculated measure with an ad hoc measure and a constant.
 
     Measure 1 = count(*), Measure 2 = "Measure 1" * 2
-    Measure 2 should compile to (["Measure 1"]) * 2 (parentheses for arithmetic precedence)
+    Measure 2 should compile to ["Measure 1"] * 2 (references the predefined measure)
     """
     measure_1 = literal_column("count(*)").label("Measure 1")
     measure_2 = literal_column('"Measure 1" * 2').label("Measure 2")
@@ -641,8 +640,8 @@ def test_calculated_measure_with_adhoc_measure_and_constant():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["__Measure 1_1"] = count() '
-        '| extend ["Measure 1"] = ["__Measure 1_1"], ["Measure 2"] = ["Measure 1"] * 2'
+        '| summarize ["Measure 1"] = count() '
+        '| extend ["Measure 2"] = ["Measure 1"] * 2'
         '| project ["Measure 1"], ["Measure 2"]'
     )
     assert query_compiled == query_expected
@@ -652,7 +651,7 @@ def test_calculated_measure_with_two_adhoc_measures_and_aggregates():
     """Test calculated measure referencing two ad hoc measures with aggregates.
 
     Measure 1 = count(*), Measure 2 = count(*)
-    Measure 3 = "Measure 1" + "Measure 2" should compile to (["Measure 1"]) + (["Measure 2"])
+    Measure 3 = "Measure 1" + "Measure 2" should compile to ["Measure 1"] + ["Measure 2"]
     """
     measure_1 = literal_column("count(*)").label("Measure 1")
     measure_2 = literal_column("count(*)").label("Measure 2")
@@ -663,8 +662,8 @@ def test_calculated_measure_with_two_adhoc_measures_and_aggregates():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["__Measure 1_1"] = count() '
-        '| extend ["Measure 1"] = ["__Measure 1_1"], ["Measure 2"] = ["__Measure 1_1"], ["Measure 3"] = ["Measure 1"] + ["Measure 2"]'
+        '| summarize ["Measure 1"] = count(), ["Measure 2"] = count() '
+        '| extend ["Measure 3"] = ["Measure 1"] + ["Measure 2"]'
         '| project ["Measure 1"], ["Measure 2"], ["Measure 3"]'
     )
     assert query_compiled == query_expected
@@ -709,8 +708,8 @@ def test_calculated_measure_with_mixed_aggregates_and_references():
     ).replace("\n", "")
     query_expected = (
         '["SalesData"]'
-        '| summarize ["__Predefined 1_1"] = count(), ["__Calculated_1"] = count(["b"]) '
-        '| extend ["Predefined 1"] = ["__Predefined 1_1"], ["Calculated"] = ["Predefined 1"] + ["__Calculated_1"]'
+        '| summarize ["Predefined 1"] = count(), ["__Calculated_1"] = count(["b"]) '
+        '| extend ["Calculated"] = ["Predefined 1"] + ["__Calculated_1"]'
         '| project ["Predefined 1"], ["Calculated"]'
     )
     assert query_compiled == query_expected

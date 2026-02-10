@@ -66,9 +66,58 @@ kql_aggregates = {
     "variancep",
 }
 AGGREGATE_PATTERN = r"(\w+)\s*\(\s*(DISTINCT|distinct\s*)?\(?\s*(\*|\[?\"?\'?\w+\"?\]?)\s*(,.+)*\)?\s*\)"
+# Pre-compiled regex for aggregate function matching (performance optimization).
+# Compiled once at module load to avoid recompiling on every call, which significantly
+# improves performance for query-heavy workloads.
 KQL_AGG_PATTERN = re.compile(
     r"\b(" + "|".join(kql_aggregates) + r")\s*\(", re.IGNORECASE
 )
+
+
+class _ParseState:
+    """Tracks parsing state while scanning through text."""
+
+    __slots__ = ("in_double_quote", "in_single_quote", "in_bracket", "paren_depth")
+
+    def __init__(self):
+        self.in_double_quote = False
+        self.in_single_quote = False
+        self.in_bracket = False
+        self.paren_depth = 0
+
+    def update(self, ch: str, prev_ch: str | None) -> None:
+        """Update state based on current and previous character."""
+        # Handle quotes (only if not escaped and not in conflicting context)
+        if (
+            ch == '"'
+            and prev_ch != "\\"
+            and not self.in_single_quote
+            and not self.in_bracket
+        ):
+            self.in_double_quote = not self.in_double_quote
+        elif (
+            ch == "'"
+            and prev_ch != "\\"
+            and not self.in_double_quote
+            and not self.in_bracket
+        ):
+            self.in_single_quote = not self.in_single_quote
+        # Handle brackets and parens (only if not in quotes)
+        elif not self.in_double_quote and not self.in_single_quote:
+            if ch == "[":
+                self.in_bracket = True
+            elif ch == "]":
+                self.in_bracket = False
+            elif not self.in_bracket:
+                if ch == "(":
+                    self.paren_depth += 1
+                elif ch == ")":
+                    self.paren_depth -= 1
+
+    @property
+    def in_quotes_or_brackets(self) -> bool:
+        """Check if currently inside quotes or brackets."""
+        return self.in_double_quote or self.in_single_quote or self.in_bracket
 
 
 class UniversalSet:
@@ -93,31 +142,38 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     sort_with_clause_parts = 2
 
     @staticmethod
+    def _find_top_level_operator(text: str, operator: str) -> int:
+        """Find position of operator at depth 0 (not inside quotes, brackets, or parens).
+
+        Args:
+            text: The string to search in
+            operator: The single-character operator to find (e.g., '+', '-', '*', '/')
+
+        Returns:
+            The position of the operator at depth 0, or -1 if not found.
+            Returns -1 when the operator only appears inside quotes, brackets, or nested parens.
+        """
+        state = _ParseState()
+        for i, ch in enumerate(text):
+            if (
+                ch == operator
+                and state.paren_depth == 0
+                and not state.in_quotes_or_brackets
+            ):
+                return i
+            state.update(ch, text[i - 1] if i > 0 else None)
+        return -1
+
+    @staticmethod
     def _is_inside_quotes_or_brackets(text: str, pos: int) -> bool:
         """Check if a position in text is inside quotes or brackets."""
         if pos >= len(text):
             return False
 
-        in_double_quote = False
-        in_single_quote = False
-        in_bracket = False
-
+        state = _ParseState()
         for i in range(pos):
-            ch = text[i]
-            prev_ch = text[i - 1] if i > 0 else None
-            if ch == '"' and prev_ch != "\\" and not in_single_quote and not in_bracket:
-                in_double_quote = not in_double_quote
-            elif (
-                ch == "'" and prev_ch != "\\" and not in_double_quote and not in_bracket
-            ):
-                in_single_quote = not in_single_quote
-            elif not in_double_quote and not in_single_quote:
-                if ch == "[":
-                    in_bracket = True
-                elif ch == "]":
-                    in_bracket = False
-
-        return in_double_quote or in_single_quote or in_bracket
+            state.update(text[i], text[i - 1] if i > 0 else None)
+        return state.in_quotes_or_brackets
 
     @staticmethod
     def _find_matching_paren(text: str, start_pos: int) -> int:
@@ -125,43 +181,48 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         if start_pos >= len(text) or text[start_pos] != "(":
             return -1
 
-        in_double_quote = False
-        in_single_quote = False
-        in_bracket = False
-        paren_depth = 1
+        state = _ParseState()
+        state.paren_depth = 1  # Start with depth 1 since we're at opening paren
 
         for i in range(start_pos + 1, len(text)):
             ch = text[i]
-            prev_ch = text[i - 1] if i > 0 else None
-
-            if ch == '"' and prev_ch != "\\" and not in_single_quote and not in_bracket:
-                in_double_quote = not in_double_quote
-            elif (
-                ch == "'" and prev_ch != "\\" and not in_double_quote and not in_bracket
-            ):
-                in_single_quote = not in_single_quote
-            elif not in_double_quote and not in_single_quote:
-                if ch == "[":
-                    in_bracket = True
-                elif ch == "]":
-                    in_bracket = False
-                elif not in_bracket:
-                    if ch == "(":
-                        paren_depth += 1
-                    elif ch == ")":
-                        paren_depth -= 1
-                        if paren_depth == 0:
-                            return i
+            state.update(ch, text[i - 1] if i > 0 else None)
+            if state.paren_depth == 0:
+                return i
         return -1
 
     @staticmethod
     def _has_operators_outside_quotes(expr: str) -> bool:
-        """Check if expression has arithmetic operators outside of quoted strings."""
-        for operator in "+-*/":
-            pos = KustoKqlCompiler._find_operator_outside_quotes(expr, operator)
-            if pos != -1:
-                return True
-        return False
+        """Check if expression has arithmetic operators outside of quoted strings and brackets."""
+        return any(
+            KustoKqlCompiler._find_top_level_operator(expr, op) != -1 for op in "+-*/"
+        )
+
+    @staticmethod
+    def _count_outer_parens(text: str) -> tuple[int, str]:
+        """Count and strip outer parentheses from text. Returns (count, stripped_text)."""
+        text = text.strip()
+        count = 0
+        while len(text) >= 2 and text[0] == "(" and text[-1] == ")":  # noqa: PLR2004
+            depth = 0
+            for ch in text[:-1]:  # Scan all but last char
+                depth += (ch == "(") - (ch == ")")
+                if depth == 0:
+                    return count, text  # First '(' closed before end
+            count += 1
+            text = text[1:-1].strip()
+        return count, text
+
+    @staticmethod
+    def _wrap_column_refs_in_parens(expr: str) -> str:
+        """Wrap bracket-quoted column refs in parens for arithmetic precedence, unless already wrapped."""
+
+        def wrap_col_ref(m: re.Match[str]) -> str:
+            if m.start() > 0 and expr[m.start() - 1] == "(":
+                return m.group(1)
+            return f"({m.group(1)})"
+
+        return re.sub(r'(\["(?:[^"\\]|\\.)*"\])', wrap_col_ref, expr)
 
     @staticmethod
     def _extract_and_replace_aggregates(
@@ -540,39 +601,38 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             or KustoKqlCompiler._is_number_literal(name)
         ) and not is_alias:
             return name
-        # First, check if the name is already wrapped in ["ColumnName"] (escaped format)
         if name.startswith('["') and name.endswith('"]'):
             return name  # Return as is if already properly escaped
-        # Handle arithmetic expressions by recursively escaping both sides
+        # Handle arithmetic expressions by recursively processing operands
         if not is_alias:
+            outer_paren_count, inner = KustoKqlCompiler._count_outer_parens(name)
             for operator in ["/", "+", "-", "*"]:
-                # Find operator that's not inside quotes
-                pos = KustoKqlCompiler._find_operator_outside_quotes(name, operator)
+                pos = KustoKqlCompiler._find_top_level_operator(inner, operator)
                 if pos != -1:
-                    left_part = name[:pos].strip()
-                    right_part = name[pos + 1 :].strip()
-                    # Recursively escape both sides
-                    left_escaped = KustoKqlCompiler._escape_and_quote_columns(left_part)
-                    right_escaped = KustoKqlCompiler._escape_and_quote_columns(
-                        right_part
+                    left = KustoKqlCompiler._escape_and_quote_columns(
+                        inner[:pos].strip()
                     )
-                    return f"{left_escaped} {operator} {right_escaped}"
+                    right = KustoKqlCompiler._escape_and_quote_columns(
+                        inner[pos + 1 :].strip()
+                    )
+                    return (
+                        "(" * outer_paren_count
+                        + left
+                        + " "
+                        + operator
+                        + " "
+                        + right
+                        + ")" * outer_paren_count
+                    )
+            # No operators - recurse on inner content if we stripped parens
+            if outer_paren_count > 0:
+                inner_result = KustoKqlCompiler._escape_and_quote_columns(inner)
+                return "(" * outer_paren_count + inner_result + ")" * outer_paren_count
         # No operators found - strip surrounding quotes if present, then wrap
         if name.startswith('"') and name.endswith('"'):
             name = name[1:-1]
         name = name.replace('"', '\\"')
         return f'["{name}"]'
-
-    @staticmethod
-    def _find_operator_outside_quotes(text: str, operator: str) -> int:
-        """Find position of operator that's not inside quoted strings. Returns -1 if not found."""
-        in_quotes = False
-        for i, ch in enumerate(text):
-            if ch == '"' and (i == 0 or text[i - 1] != "\\"):
-                in_quotes = not in_quotes
-            elif not in_quotes and ch == operator:
-                return i
-        return -1
 
     @staticmethod
     def _sql_to_kql_where(where_clause: str) -> str:
