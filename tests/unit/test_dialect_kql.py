@@ -565,6 +565,127 @@ def test_escape_and_quote_columns_preserves_already_bracketed():
     assert result == '["Measure 1"]'
 
 
+class TestCalculatedMeasuresWithParentheses:
+    """Tests for calculated measures with parentheses support."""
+
+    @pytest.fixture
+    def pt_search_table(self):
+        """Table matching the Superset PT_Search_scenario use case."""
+        metadata = MetaData()
+        return Table(
+            "PT_Search_scenario",
+            metadata,
+            Column("UserInfo_Ring", String),
+            Column("UserInfo_Region", String),
+            schema="test_schema",
+        )
+
+    def test_calculated_measure_single_paren(self, pt_search_table):
+        """Test a calculated measure with single parentheses wrapper."""
+        measure_16 = literal_column('("UserInfo_Ring Count")').label("Measure 16")
+
+        query = select(measure_16).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        assert '["Measure 16"]' in compiled
+
+    def test_calculated_measure_double_paren(self, pt_search_table):
+        """Test a calculated measure with double parentheses wrapper.
+
+        Double parens around a single measure reference are stripped since
+        they're unnecessary for precedence.
+        """
+        measure_3 = literal_column('(("Measure 1"))').label("Measure 3")
+
+        query = select(measure_3).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        assert '["Measure 3"]' in compiled
+        # Parens should be stripped for single values (no operators inside)
+        assert '["Measure 1"]' in compiled
+
+    def test_calculated_measure_parens_addition(self, pt_search_table):
+        """Test a calculated measure with parenthesized addition."""
+        measure_11 = literal_column('("Measure 1") + ("Measure 2")').label("Measure 11")
+
+        query = select(measure_11).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        assert '["Measure 11"]' in compiled
+        assert "+" in compiled
+
+    def test_calculated_measure_complex_expression(self, pt_search_table):
+        """Test a complex calculated measure with nested parens and multiplication."""
+        measure_8 = literal_column(
+            '("UserInfo_Ring Count" + "UserInfo_Region Count") * 2'
+        ).label("Measure 8")
+
+        query = select(measure_8).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        assert '["Measure 8"]' in compiled
+        assert "* 2" in compiled
+        assert "+" in compiled
+
+    def test_no_double_bracketing(self, pt_search_table):
+        """Test that there's no double bracketing like [["col"]]."""
+        measure = literal_column('"UserInfo_Ring Count"').label("Test Measure")
+
+        query = select(measure).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        # Should not have double brackets
+        assert '[["' not in compiled
+        assert '"]]' not in compiled
+
+    def test_wrapped_aggregate_extracted_correctly(self, pt_search_table):
+        """Test that aggregates wrapped in parens (like ((COUNT(col)))) are extracted correctly."""
+        measure_4 = literal_column("((COUNT(UserInfo_Ring)))").label("Measure 4")
+
+        query = select(measure_4).select_from(pt_search_table)
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        # Should have summarize with the aggregate
+        assert "summarize" in compiled
+
+        # Find the extend part
+        extend_idx = compiled.find("extend")
+        if extend_idx != -1:
+            project_idx = compiled.find("| project")
+            extend_part = (
+                compiled[extend_idx:project_idx]
+                if project_idx != -1
+                else compiled[extend_idx:]
+            )
+
+            # Should NOT have COUNT() in extend
+            assert "COUNT(" not in extend_part
+            assert "count(" not in extend_part
+            # Should have a reference
+            assert '["Measure 4"]' in extend_part
+
+    def test_floating_point_numbers(self, pt_search_table):
+        """Test that floating point numbers are preserved correctly."""
+        measure_1 = literal_column("count()").label("Measure 1")
+        measure_2 = literal_column('"Measure 1" * 0.5').label("Measure 2")
+        measure_3 = literal_column('"Measure 1" * 1.25').label("Measure 3")
+        measure_4 = literal_column('"Measure 1" / 0.1').label("Measure 4")
+
+        query = select(measure_1, measure_2, measure_3, measure_4).select_from(
+            pt_search_table
+        )
+        compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
+
+        # Floating point numbers should be preserved, not wrapped in brackets
+        assert "* 0.5" in compiled
+        assert "* 1.25" in compiled
+        assert "/ 0.1" in compiled
+        # Should NOT have bracketed numbers
+        assert '["0.5"]' not in compiled
+        assert '["1.25"]' not in compiled
+        assert '["0.1"]' not in compiled
+
+
 def test_calculated_measure_with_two_adhoc_measures():
     """Test calculated measure referencing two ad hoc measures.
 
@@ -720,6 +841,156 @@ def test_calculated_measure_with_mixed_aggregates_and_references():
 # ============================================================================
 
 
+class TestFindTopLevelOperator:
+    """Tests for _find_top_level_operator helper."""
+
+    NOT_FOUND = -1
+    # Expected positions for operator in various test strings
+    POS_AFTER_SPACE_CHAR = 2  # "a + b" -> operator at index 2
+    POS_AFTER_PARENS = 4  # "(a) + (b)" -> operator at index 4
+    POS_AFTER_DOUBLE_PARENS = 6  # "((a)) + ((b))" -> operator at index 6
+    POS_AFTER_ESCAPED_QUOTE = 7  # '"a\"b" + c' -> operator at index 7
+    POS_MINUS = 6  # "a + b - c * d / e" -> minus at index 6
+    POS_MULT = 10  # "a + b - c * d / e" -> mult at index 10
+    POS_DIV = 14  # "a + b - c * d / e" -> div at index 14
+
+    def test_finds_operator_at_start(self):
+        assert KustoKqlCompiler._find_top_level_operator("+ b", "+") == 0
+
+    def test_finds_operator_in_middle(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator("a + b", "+")
+            == self.POS_AFTER_SPACE_CHAR
+        )
+
+    def test_finds_operator_at_end(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator("a +", "+")
+            == self.POS_AFTER_SPACE_CHAR
+        )
+
+    def test_not_found_returns_minus_one(self):
+        assert KustoKqlCompiler._find_top_level_operator("a b", "+") == self.NOT_FOUND
+
+    def test_operator_inside_double_quotes_not_found(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator('"a + b"', "+") == self.NOT_FOUND
+        )
+
+    def test_operator_inside_single_quotes_not_found(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator("'a + b'", "+") == self.NOT_FOUND
+        )
+
+    def test_operator_inside_brackets_not_found(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator('["a + b"]', "+")
+            == self.NOT_FOUND
+        )
+
+    def test_operator_inside_parens_not_found(self):
+        assert (
+            KustoKqlCompiler._find_top_level_operator("(a + b)", "+") == self.NOT_FOUND
+        )
+
+    def test_finds_operator_outside_parens(self):
+        result = KustoKqlCompiler._find_top_level_operator("(a) + (b)", "+")
+        assert result == self.POS_AFTER_PARENS
+
+    def test_finds_operator_with_nested_parens(self):
+        result = KustoKqlCompiler._find_top_level_operator("((a)) + ((b))", "+")
+        assert result == self.POS_AFTER_DOUBLE_PARENS
+
+    def test_mixed_quotes_and_operator(self):
+        result = KustoKqlCompiler._find_top_level_operator("\"col\" + 'value'", "+")
+        assert result == self.POS_AFTER_DOUBLE_PARENS
+
+    def test_operator_after_escaped_quote(self):
+        # Escaped quote should not affect detection
+        text = r'"a\"b" + c'
+        assert (
+            KustoKqlCompiler._find_top_level_operator(text, "+")
+            == self.POS_AFTER_ESCAPED_QUOTE
+        )
+
+    def test_multiple_operators_finds_first(self):
+        result = KustoKqlCompiler._find_top_level_operator("a + b + c", "+")
+        assert result == self.POS_AFTER_SPACE_CHAR
+
+    def test_different_operator_types(self):
+        text = "a + b - c * d / e"
+        assert (
+            KustoKqlCompiler._find_top_level_operator(text, "+")
+            == self.POS_AFTER_SPACE_CHAR
+        )
+        assert KustoKqlCompiler._find_top_level_operator(text, "-") == self.POS_MINUS
+        assert KustoKqlCompiler._find_top_level_operator(text, "*") == self.POS_MULT
+        assert KustoKqlCompiler._find_top_level_operator(text, "/") == self.POS_DIV
+
+    def test_empty_string(self):
+        assert KustoKqlCompiler._find_top_level_operator("", "+") == self.NOT_FOUND
+
+
+class TestCountOuterParens:
+    """Tests for _count_outer_parens helper."""
+
+    ZERO_PARENS = 0
+    ONE_PAREN = 1
+    TWO_PARENS = 2
+    THREE_PARENS = 3
+
+    def test_no_parens(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("a + b")
+        assert count == self.ZERO_PARENS
+        assert inner == "a + b"
+
+    def test_single_outer_paren(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("(a + b)")
+        assert count == self.ONE_PAREN
+        assert inner == "a + b"
+
+    def test_double_outer_parens(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("((a + b))")
+        assert count == self.TWO_PARENS
+        assert inner == "a + b"
+
+    def test_triple_outer_parens(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("(((x)))")
+        assert count == self.THREE_PARENS
+        assert inner == "x"
+
+    def test_parens_not_matching(self):
+        # (a) + (b) - first paren doesn't wrap the whole expression
+        count, inner = KustoKqlCompiler._count_outer_parens("(a) + (b)")
+        assert count == self.ZERO_PARENS
+        assert inner == "(a) + (b)"
+
+    def test_mixed_outer_and_inner(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("((a + (b)))")
+        assert count == self.TWO_PARENS
+        assert inner == "a + (b)"
+
+    def test_with_whitespace(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("  ( (x) )  ")
+        assert count == self.TWO_PARENS
+        assert inner == "x"
+
+    def test_empty_string(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("")
+        assert count == self.ZERO_PARENS
+        assert inner == ""
+
+    def test_single_char(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("x")
+        assert count == self.ZERO_PARENS
+        assert inner == "x"
+
+    def test_parens_only(self):
+        count, inner = KustoKqlCompiler._count_outer_parens("()")
+        assert count == self.ONE_PAREN
+        assert inner == ""
+
+
 class TestIsInsideQuotesOrBrackets:
     """Tests for _is_inside_quotes_or_brackets helper."""
 
@@ -778,42 +1049,58 @@ class TestIsInsideQuotesOrBrackets:
 class TestFindMatchingParen:
     """Tests for _find_matching_paren helper."""
 
+    NOT_FOUND = -1
+    # Expected closing paren positions for various test strings
+    SIMPLE_CLOSE = 7  # "count(x)" -> closing paren at 7
+    OUTER_CLOSE = 12  # "sum(count(x))" -> outer closing at 12
+    INNER_CLOSE = 11  # "sum(count(x))" -> inner closing at 11
+    QUOTED_CLOSE = 23  # 'func("text(with)parens")' -> closing at 23
+    BRACKETED_CLOSE = 15  # 'func(["col(1)"])' -> closing at 15
+    EMPTY_CLOSE = 5  # "func()" -> closing at 5
+    DEEPLY_NESTED_OUTER = 9  # "a(b(c(d)))" -> outermost closing at 9
+    DEEPLY_NESTED_MID = 8  # "a(b(c(d)))" -> middle closing at 8
+    DEEPLY_NESTED_INNER = 7  # "a(b(c(d)))" -> innermost closing at 7
+
     def test_simple_parentheses(self):
         text = "count(x)"
-        assert KustoKqlCompiler._find_matching_paren(text, 5) == 7
+        assert KustoKqlCompiler._find_matching_paren(text, 5) == self.SIMPLE_CLOSE
 
     def test_nested_parentheses(self):
         text = "sum(count(x))"
-        assert KustoKqlCompiler._find_matching_paren(text, 3) == 12  # Outer paren
-        assert KustoKqlCompiler._find_matching_paren(text, 9) == 11  # Inner paren
+        assert KustoKqlCompiler._find_matching_paren(text, 3) == self.OUTER_CLOSE
+        assert KustoKqlCompiler._find_matching_paren(text, 9) == self.INNER_CLOSE
 
     def test_parentheses_with_quotes(self):
         # Parens inside quotes should be ignored
         text = 'func("text(with)parens")'
-        assert KustoKqlCompiler._find_matching_paren(text, 4) == 23
+        assert KustoKqlCompiler._find_matching_paren(text, 4) == self.QUOTED_CLOSE
 
     def test_parentheses_with_brackets(self):
         # Parens inside brackets should be ignored
         text = 'func(["col(1)"])'
-        assert KustoKqlCompiler._find_matching_paren(text, 4) == 15
+        assert KustoKqlCompiler._find_matching_paren(text, 4) == self.BRACKETED_CLOSE
 
     def test_no_opening_paren_at_position(self):
         text = "no paren here"
-        assert KustoKqlCompiler._find_matching_paren(text, 0) == -1
+        assert KustoKqlCompiler._find_matching_paren(text, 0) == self.NOT_FOUND
 
     def test_unmatched_parenthesis(self):
         text = "func(x"
-        assert KustoKqlCompiler._find_matching_paren(text, 4) == -1
+        assert KustoKqlCompiler._find_matching_paren(text, 4) == self.NOT_FOUND
 
     def test_empty_parentheses(self):
         text = "func()"
-        assert KustoKqlCompiler._find_matching_paren(text, 4) == 5
+        assert KustoKqlCompiler._find_matching_paren(text, 4) == self.EMPTY_CLOSE
 
     def test_deeply_nested(self):
         text = "a(b(c(d)))"
-        assert KustoKqlCompiler._find_matching_paren(text, 1) == 9
-        assert KustoKqlCompiler._find_matching_paren(text, 3) == 8
-        assert KustoKqlCompiler._find_matching_paren(text, 5) == 7
+        assert (
+            KustoKqlCompiler._find_matching_paren(text, 1) == self.DEEPLY_NESTED_OUTER
+        )
+        assert KustoKqlCompiler._find_matching_paren(text, 3) == self.DEEPLY_NESTED_MID
+        assert (
+            KustoKqlCompiler._find_matching_paren(text, 5) == self.DEEPLY_NESTED_INNER
+        )
 
 
 class TestHasOperatorsOutsideQuotes:
@@ -853,13 +1140,17 @@ class TestHasOperatorsOutsideQuotes:
 class TestExtractAndReplaceAggregates:
     """Tests for _extract_and_replace_aggregates helper."""
 
+    ZERO_AGGS = 0
+    ONE_AGG = 1
+    TWO_AGGS = 2
+
     def test_single_aggregate(self):
         expr = 'count(["a"])'
         result, new_aggs = KustoKqlCompiler._extract_and_replace_aggregates(
             expr, "Measure"
         )
         assert result == '["__Measure_1"]'
-        assert len(new_aggs) == 1
+        assert len(new_aggs) == self.ONE_AGG
         assert new_aggs[0] == ('["__Measure_1"]', 'count(["a"])')
 
     def test_two_aggregates_with_operator(self):
@@ -868,7 +1159,7 @@ class TestExtractAndReplaceAggregates:
             expr, "Measure"
         )
         assert result == '["__Measure_1"] + ["__Measure_2"]'
-        assert len(new_aggs) == 2
+        assert len(new_aggs) == self.TWO_AGGS
         assert new_aggs[0][1] == 'count(["a"])'
         assert new_aggs[1][1] == 'sum(["b"])'
 
@@ -878,7 +1169,7 @@ class TestExtractAndReplaceAggregates:
             expr, "Measure"
         )
         assert result == '["a"] + ["b"]'
-        assert len(new_aggs) == 0
+        assert len(new_aggs) == self.ZERO_AGGS
 
     def test_reuses_existing_aggregate(self):
         expr = 'count(["a"]) + count(["a"])'
@@ -887,7 +1178,7 @@ class TestExtractAndReplaceAggregates:
         )
         # Both should use the same reference
         assert result == '["__Measure_1"] + ["__Measure_1"]'
-        assert len(new_aggs) == 1  # Only one unique aggregate
+        assert len(new_aggs) == self.ONE_AGG  # Only one unique aggregate
 
     def test_existing_aggs_parameter(self):
         existing = {'count(["a"])': '["existing_ref"]'}
@@ -896,7 +1187,7 @@ class TestExtractAndReplaceAggregates:
             expr, "Measure", existing
         )
         assert '["existing_ref"]' in result
-        assert len(new_aggs) == 1  # Only sum is new, count is reused
+        assert len(new_aggs) == self.ONE_AGG  # Only sum is new, count is reused
 
     def test_aggregate_in_quotes_ignored(self):
         expr = '"count(a)"'
@@ -904,7 +1195,7 @@ class TestExtractAndReplaceAggregates:
             expr, "Measure"
         )
         assert result == '"count(a)"'
-        assert len(new_aggs) == 0
+        assert len(new_aggs) == self.ZERO_AGGS
 
     def test_aggregate_in_brackets_ignored(self):
         expr = '["count(a)"]'
@@ -912,7 +1203,7 @@ class TestExtractAndReplaceAggregates:
             expr, "Measure"
         )
         assert result == '["count(a)"]'
-        assert len(new_aggs) == 0
+        assert len(new_aggs) == self.ZERO_AGGS
 
     def test_measure_name_with_special_chars(self):
         expr = 'count(["a"])'
@@ -927,7 +1218,7 @@ class TestExtractAndReplaceAggregates:
         assert '["__Pct_1"]' in result
         assert '["__Pct_2"]' in result
         assert "* 100 /" in result
-        assert len(new_aggs) == 2
+        assert len(new_aggs) == self.TWO_AGGS
 
 
 class TestContainsAggregateFunction:

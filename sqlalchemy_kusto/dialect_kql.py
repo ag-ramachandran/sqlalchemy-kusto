@@ -214,17 +214,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         return count, text
 
     @staticmethod
-    def _wrap_column_refs_in_parens(expr: str) -> str:
-        """Wrap bracket-quoted column refs in parens for arithmetic precedence, unless already wrapped."""
-
-        def wrap_col_ref(m: re.Match[str]) -> str:
-            if m.start() > 0 and expr[m.start() - 1] == "(":
-                return m.group(1)
-            return f"({m.group(1)})"
-
-        return re.sub(r'(\["(?:[^"\\]|\\.)*"\])', wrap_col_ref, expr)
-
-    @staticmethod
     def _extract_and_replace_aggregates(
         expr: str, measure_name: str, existing_aggs: dict[str, str] | None = None
     ) -> tuple[str, list[tuple[str, str]]]:
@@ -624,10 +613,9 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                         + right
                         + ")" * outer_paren_count
                     )
-            # No operators - recurse on inner content if we stripped parens
+            # No operators - just process inner content (don't re-add unnecessary parens)
             if outer_paren_count > 0:
-                inner_result = KustoKqlCompiler._escape_and_quote_columns(inner)
-                return "(" * outer_paren_count + inner_result + ")" * outer_paren_count
+                return KustoKqlCompiler._escape_and_quote_columns(inner)
         # No operators found - strip surrounding quotes if present, then wrap
         if name.startswith('"') and name.endswith('"'):
             name = name[1:-1]
