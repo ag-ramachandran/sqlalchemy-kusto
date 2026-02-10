@@ -379,23 +379,23 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 # Do we have a group by clause ?
                 # Do we have aggregate columns ?
                 kql_agg = self._extract_maybe_agg_column_parts(column_name)
-                has_operators = self._has_operators_outside_quotes(column_name)
                 has_inline_aggregates = self._contains_aggregate_function(column_name)
 
                 # Case 1: Simple aggregate (e.g., count(), sum(col))
-                if kql_agg and not has_operators:
+                if kql_agg and not self._has_operators_outside_quotes(column_name):
                     has_aggregates = True
                     summarize_entry = self._build_column_projection(
                         kql_agg, column_alias
                     )
-                    if summarize_entry not in summarize_columns:
-                        summarize_columns.append(summarize_entry)
+                    summarize_columns.append(summarize_entry)
                     projection_columns.append(column_alias)
-                    # Register this aggregate for reuse by later columns
                     if column_alias:
                         existing_aggs[kql_agg.lower()] = column_alias
 
                 # Case 2 & 3: Expressions with aggregates or aliased columns (both go to extend)
+                # No group by clause
+                # Do the columns have aliases ?
+                # Add additional and to handle case where : SELECT column_name as column_name
                 elif has_inline_aggregates or (
                     column_alias
                     and column_alias != self._escape_and_quote_columns(column_name)
@@ -414,14 +414,12 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                             summarize_entry = self._build_column_projection(
                                 kql_agg_extracted, ref_name
                             )
-                            if summarize_entry not in summarize_columns:
-                                summarize_columns.append(summarize_entry)
+                            summarize_columns.append(summarize_entry)
 
                     # Build extend entry (common for both cases)
                     escaped_expr = self._escape_and_quote_columns(column_name)
                     extend_entry = f"{column_alias} = {escaped_expr}"
-                    if extend_entry not in extend_columns:
-                        extend_columns.append(extend_entry)
+                    extend_columns.append(extend_entry)
                     projection_columns.append(column_alias)
 
                 # Case 4: Simple column reference
@@ -572,17 +570,11 @@ class KustoKqlCompiler(compiler.SQLCompiler):
     def _find_operator_outside_quotes(text: str, operator: str) -> int:
         """Find position of operator that's not inside quoted strings. Returns -1 if not found."""
         in_quotes = False
-        paren_depth = 0
         for i, ch in enumerate(text):
             if ch == '"' and (i == 0 or text[i - 1] != "\\"):
                 in_quotes = not in_quotes
-            elif not in_quotes:
-                if ch == "(":
-                    paren_depth += 1
-                elif ch == ")":
-                    paren_depth -= 1
-                elif ch == operator and paren_depth == 0:
-                    return i
+            elif not in_quotes and ch == operator:
+                return i
         return -1
 
     @staticmethod
