@@ -203,7 +203,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         """Count and strip outer parentheses from text. Returns (count, stripped_text)."""
         text = text.strip()
         count = 0
-        while len(text) >= 2 and text[0] == "(" and text[-1] == ")":  # noqa: PLR2004
+        while len(text) > 1 and text[0] == "(" and text[-1] == ")":
             depth = 0
             for ch in text[:-1]:  # Scan all but last char
                 depth += (ch == "(") - (ch == ")")
@@ -590,6 +590,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             or KustoKqlCompiler._is_number_literal(name)
         ) and not is_alias:
             return name
+        # First, check if the name is already wrapped in ["ColumnName"] (escaped format)
         if name.startswith('["') and name.endswith('"]'):
             return name  # Return as is if already properly escaped
         # Handle arithmetic expressions by recursively processing operands
