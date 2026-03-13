@@ -142,13 +142,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                 )
                 compiled_query_lines.append(f"| where {converted_where_clause}")
 
-        # Add summarize first if it exists
-        if "summarize" in projections_parts_dict:
-            compiled_query_lines.append(projections_parts_dict.pop("summarize"))
-
-        # Then add extend after summarize
-        if "extend" in projections_parts_dict:
-            compiled_query_lines.append(projections_parts_dict.pop("extend"))
+        # Add clauses in correct order: pre-extend, summarize, post-extend
+        for key in ("pre_extend", "summarize", "post_extend"):
+            if key in projections_parts_dict:
+                compiled_query_lines.append(projections_parts_dict.pop(key))
 
         # Add remaining parts (project, sort)
         for statement_part in projections_parts_dict.values():
@@ -204,7 +201,8 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         group_by_cols = select._group_by_clauses
         order_by_cols = select._order_by_clauses
         summarize_statement = ""
-        extend_statement = ""
+        pre_extend_statement = ""
+        post_extend_statement = ""
         project_statement = ""
         has_aggregates = False
         # The following is the logic
@@ -219,8 +217,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         #                N---> Add to projection
         if columns is not None:
             summarize_columns = set()
-            extend_columns = set()
+            pre_extend_columns: list[str] = []
+            post_extend_columns: list[str] = []
             projection_columns = []
+            all_agg_aliases: set[str] = set()
             for column in [c for c in columns if c.name != "*"]:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
                 column_alias = self._escape_and_quote_columns(column_alias, True)
@@ -232,13 +232,26 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     summarize_columns.add(
                         self._build_column_projection(kql_agg, column_alias)
                     )
+                    if column_alias:
+                        all_agg_aliases.add(column_alias)
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
                 elif column_alias and column_alias != column_name:
-                    extend_columns.add(
-                        self._build_column_projection(column_name, column_alias, True)
+                    extend_entry = self._build_column_projection(
+                        column_name, column_alias, True
                     )
+                    escaped_expr = self._escape_and_quote_columns(column_name)
+
+                    # Calculated measures (aggregate-dependent) go after summarize;
+                    # calculated columns (no aggregate dependency) go before summarize
+                    target = (
+                        post_extend_columns
+                        if any(alias in escaped_expr for alias in all_agg_aliases)
+                        else pre_extend_columns
+                    )
+                    target.append(extend_entry)
+
                 if column_alias:
                     projection_columns.append(
                         self._escape_and_quote_columns(column_alias, True)
@@ -257,8 +270,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     summarize_statement = (
                         f"{summarize_statement} by {', '.join(by_columns)}"
                     )
-            if extend_columns:
-                extend_statement = f"| extend {', '.join(sorted(extend_columns))}"
+            if pre_extend_columns:
+                pre_extend_statement = f"| extend {', '.join(pre_extend_columns)}"
+            if post_extend_columns:
+                post_extend_statement = f"| extend {', '.join(post_extend_columns)}"
             project_statement = (
                 f"| project {', '.join(projection_columns)}"
                 if projection_columns
@@ -269,7 +284,8 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             f"| order by {', '.join(unwrapped_order_by)}" if unwrapped_order_by else ""
         )
         return {
-            "extend": extend_statement,
+            "pre_extend": pre_extend_statement,
+            "post_extend": post_extend_statement,
             "summarize": summarize_statement,
             "project": project_statement,
             "sort": sort_statement,

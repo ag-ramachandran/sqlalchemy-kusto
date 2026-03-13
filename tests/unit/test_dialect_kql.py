@@ -173,12 +173,12 @@ def test_group_by_text():
     query_compiled = str(
         query.compile(engine, compile_kwargs={"literal_binds": True})
     ).replace("\n", "")
-    # raw query text from query
+    # raw query text from query - order matches column appearance
     query_expected = (
         '["ActiveUsersLastMonth"]'
+        '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d), '
+        '["ActiveUserMetric"] = ["ActiveUsers"]'
         '| summarize   by ["EventInfo_Time"] / time(1d)'
-        '| extend ["ActiveUserMetric"] = ["ActiveUsers"], '
-        '["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["ActiveUserMetric"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -202,12 +202,13 @@ def test_function_text(f: str, expected: str):
     query_compiled = str(
         query.compile(engine, compile_kwargs={"literal_binds": True})
     ).replace("\n", "")
+    # Order matches column appearance in select
     query_expected = (
         '["ActiveUsersLastMonth"]'
-        '| extend ["ActiveUserMetric"] = ["ActiveUsers"], '
-        '["EventInfo_Time"] = '
+        '| extend ["EventInfo_Time"] = '
         + expected
-        + '| project ["EventInfo_Time"], ["ActiveUserMetric"]'
+        + ', ["ActiveUserMetric"] = ["ActiveUsers"]'
+        '| project ["EventInfo_Time"], ["ActiveUserMetric"]'
     )
     assert query_compiled == query_expected
 
@@ -226,8 +227,8 @@ def test_group_by_text_vaccine_dataset():
     ).replace("\n", "")
     query_expected = (
         'database("superset").["CovidVaccineData"]'
-        '| summarize   by ["country_name"]'
         '| extend ["country_name"] = ["country_name"]'
+        '| summarize   by ["country_name"]'
         '| project ["country_name"]'
         '| order by ["country_name"] asc'
     )
@@ -328,8 +329,8 @@ def test_distinct_count_by_text():
     # raw query text from query
     query_expected = (
         '["ActiveUsersLastMonth"]'
-        '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
         '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
+        '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["DistinctUsers"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -354,8 +355,8 @@ def test_distinct_count_alt_by_text():
     # raw query text from query
     query_expected = (
         '["ActiveUsersLastMonth"]'
-        '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
         '| extend ["EventInfo_Time"] = ["EventInfo_Time"] / time(1d)'
+        '| summarize ["DistinctUsers"] = dcount(["ActiveUsers"])  by ["EventInfo_Time"] / time(1d)'
         '| project ["EventInfo_Time"], ["DistinctUsers"]'
         '| order by ["ActiveUserMetric"] desc'
     )
@@ -567,6 +568,37 @@ def test_calculated_measure_with_adhoc_measure_and_constant():
         '| summarize ["Measure 1"] = count() '
         '| extend ["Measure 2"] = ["Measure 1"] * 2'
         '| project ["Measure 1"], ["Measure 2"]'
+    )
+    assert query_compiled == query_expected
+
+
+def test_pre_aggregated_calculations():
+    """Test from PR #48 review: calculated column before aggregation.
+
+    A calculated column (strcat) is created and used as a group-by dimension.
+    The extend must appear before summarize so the column exists for grouping.
+    """
+    app_col = literal_column("App")
+    ns_col = literal_column("Namespace")
+    id_col = literal_column("_id")
+
+    app_namespace = sa.func.strcat(app_col, ns_col).label("App_Namespace")
+
+    query = (
+        select(app_namespace, sa.func.count(id_col).label("TotalLogs"))
+        .select_from(text("Logs"))
+        .group_by(app_namespace)
+    )
+
+    query_compiled = str(
+        query.compile(engine, compile_kwargs={"literal_binds": True})
+    ).replace("\n", "")
+
+    query_expected = (
+        '["Logs"]'
+        '| extend ["App_Namespace"] = strcat(App, Namespace)'
+        '| summarize ["TotalLogs"] = count(["_id"])  by ["App_Namespace"]'
+        '| project ["App_Namespace"], ["TotalLogs"]'
     )
     assert query_compiled == query_expected
 
