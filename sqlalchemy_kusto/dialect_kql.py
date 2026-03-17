@@ -220,7 +220,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             pre_extend_columns: list[str] = []
             post_extend_columns: list[str] = []
             projection_columns = []
-            all_agg_aliases: set[str] = set()
+            all_agg_aliases_raw: set[str] = set()
             for column in [c for c in columns if c.name != "*"]:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
                 column_alias = self._escape_and_quote_columns(column_alias, True)
@@ -233,7 +233,10 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                         self._build_column_projection(kql_agg, column_alias)
                     )
                     if column_alias:
-                        all_agg_aliases.add(column_alias)
+                        raw = column_alias
+                        if raw.startswith('["') and raw.endswith('"]'):
+                            raw = raw[2:-2]
+                        all_agg_aliases_raw.add(raw)
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
@@ -241,13 +244,14 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     extend_entry = self._build_column_projection(
                         column_name, column_alias, True
                     )
-                    escaped_expr = self._escape_and_quote_columns(column_name)
 
                     # Calculated measures (aggregate-dependent) go after summarize;
                     # calculated columns (no aggregate dependency) go before summarize
                     target = (
                         post_extend_columns
-                        if any(alias in escaped_expr for alias in all_agg_aliases)
+                        if self._expression_references_aliases(
+                            column_name, all_agg_aliases_raw
+                        )
                         else pre_extend_columns
                     )
                     target.append(extend_entry)
@@ -368,6 +372,30 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         modified_expression = re.sub(pattern, replacer, kql_expression)
 
         return modified_expression
+
+    @staticmethod
+    def _expression_references_aliases(
+        expression: str, raw_aliases: set[str]
+    ) -> bool:
+        """Check if an expression references any aggregate alias.
+
+        Checks for both double-quoted ("alias") and KQL-escaped (["alias"])
+        forms across the entire expression, including inside function calls
+        and on either side of operators.
+        """
+        for alias in raw_aliases:
+            escaped_alias = re.escape(alias)
+            # Match ["alias"] or "alias" anywhere in the expression
+            if re.search(
+                rf'\["{escaped_alias}"\]|"{escaped_alias}"', expression
+            ):
+                return True
+            # For simple identifiers, also match unquoted bare references
+            if re.fullmatch(r"[A-Za-z_]\w*", alias) and re.search(
+                rf"\b{escaped_alias}\b", expression
+            ):
+                return True
+        return False
 
     @staticmethod
     def _escape_and_quote_columns(name: str | None, is_alias=False) -> str:

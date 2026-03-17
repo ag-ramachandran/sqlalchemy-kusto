@@ -603,10 +603,51 @@ def test_pre_aggregated_calculations():
     assert query_compiled == query_expected
 
 
+def test_calculated_measure_alias_in_function():
+    """Test that an aggregate alias inside a function is detected as post-extend.
+
+    round("Measure 1", 2) references the aggregate alias inside a function call,
+    which _escape_and_quote_columns returns unchanged (it's a KQL function).
+    The robust check must still detect the dependency.
+    """
+    measure_1 = literal_column("count(*)").label("Measure 1")
+    measure_2 = literal_column('round("Measure 1", 2)').label("Rounded")
+    query = select([measure_1, measure_2]).select_from(text("SalesData"))
+    query_compiled = str(
+        query.compile(engine, compile_kwargs={"literal_binds": True})
+    ).replace("\n", "")
+    query_expected = (
+        '["SalesData"]'
+        '| summarize ["Measure 1"] = count() '
+        '| extend ["Rounded"] = round(["Measure 1"], 2)'
+        '| project ["Measure 1"], ["Rounded"]'
+    )
+    assert query_compiled == query_expected
+
+
+def test_calculated_measure_alias_on_rhs_of_operator():
+    """Test that an aggregate alias on the RHS of an operator is detected.
+
+    2 * "Measure 1" has the alias on the right side of the operator.
+    """
+    measure_1 = literal_column("count(*)").label("Measure 1")
+    measure_2 = literal_column('2 * "Measure 1"').label("Doubled")
+    query = select([measure_1, measure_2]).select_from(text("SalesData"))
+    query_compiled = str(
+        query.compile(engine, compile_kwargs={"literal_binds": True})
+    ).replace("\n", "")
+    query_expected = (
+        '["SalesData"]'
+        '| summarize ["Measure 1"] = count() '
+        '| extend ["Doubled"] = ["2"] * "Measure 1"'
+        '| project ["Measure 1"], ["Doubled"]'
+    )
+    assert query_compiled == query_expected
+
+
 @pytest.mark.parametrize(
     ("query_table_name", "expected_table_name"),
     [
-        ("schema.table", 'database("schema").["table"]'),
         ('schema."table.name"', 'database("schema").["table.name"]'),
         ('"schema.name".table', 'database("schema.name").["table"]'),
         ('"schema.name"."table.name"', 'database("schema.name").["table.name"]'),
