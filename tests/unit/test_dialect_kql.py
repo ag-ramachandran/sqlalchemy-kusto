@@ -639,8 +639,30 @@ def test_calculated_measure_alias_on_rhs_of_operator():
     query_expected = (
         '["SalesData"]'
         '| summarize ["Measure 1"] = count() '
-        '| extend ["Doubled"] = ["2"] * "Measure 1"'
+        '| extend ["Doubled"] = 2 * ["Measure 1"]'
         '| project ["Measure 1"], ["Doubled"]'
+    )
+    assert query_compiled == query_expected
+
+
+def test_calculated_measure_forward_reference():
+    """Test that a calculated measure listed before its aggregate dependency works.
+
+    When Measure 2 (which references Measure 1) appears before Measure 1 in the
+    select list, the two-pass alias collection ensures it is still classified as
+    post_extend.
+    """
+    measure_2 = literal_column('"Measure 1" * 2').label("Measure 2")
+    measure_1 = literal_column("count(*)").label("Measure 1")
+    query = select([measure_2, measure_1]).select_from(text("SalesData"))
+    query_compiled = str(
+        query.compile(engine, compile_kwargs={"literal_binds": True})
+    ).replace("\n", "")
+    query_expected = (
+        '["SalesData"]'
+        '| summarize ["Measure 1"] = count() '
+        '| extend ["Measure 2"] = ["Measure 1"] * 2'
+        '| project ["Measure 2"], ["Measure 1"]'
     )
     assert query_compiled == query_expected
 

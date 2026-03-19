@@ -220,8 +220,14 @@ class KustoKqlCompiler(compiler.SQLCompiler):
             pre_extend_columns: list[str] = []
             post_extend_columns: list[str] = []
             projection_columns = []
-            all_agg_aliases_raw: set[str] = set()
-            for column in [c for c in columns if c.name != "*"]:
+
+            # Two-pass approach: first collect all aggregate aliases so that
+            # forward references (a calculated measure listed before the
+            # aggregate it depends on) are classified correctly.
+            columns_list = [c for c in columns if c.name != "*"]
+            all_agg_aliases_raw = self._collect_aggregate_aliases(columns_list)
+
+            for column in columns_list:
                 column_name, column_alias = self._extract_column_name_and_alias(column)
                 column_alias = self._escape_and_quote_columns(column_alias, True)
                 # Do we have a group by clause ?
@@ -232,11 +238,6 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     summarize_columns.add(
                         self._build_column_projection(kql_agg, column_alias)
                     )
-                    if column_alias:
-                        raw = column_alias
-                        if raw.startswith('["') and raw.endswith('"]'):
-                            raw = raw[2:-2]
-                        all_agg_aliases_raw.add(raw)
                 # No group by clause
                 # Do the columns have aliases ?
                 # Add additional and to handle case where : SELECT column_name as column_name
@@ -373,6 +374,25 @@ class KustoKqlCompiler(compiler.SQLCompiler):
 
         return modified_expression
 
+    def _collect_aggregate_aliases(self, columns_list) -> set[str]:
+        """Pre-scan columns to collect all aggregate aliases.
+
+        This ensures calculated measures that forward-reference an aggregate
+        defined later in the select list are still classified correctly.
+        """
+        aliases: set[str] = set()
+        for column in columns_list:
+            column_name, _ = self._extract_column_name_and_alias(column)
+            if self._extract_maybe_agg_column_parts(column_name):
+                _, col_alias = self._extract_column_name_and_alias(column)
+                col_alias = self._escape_and_quote_columns(col_alias, True)
+                if col_alias:
+                    raw = col_alias
+                    if raw.startswith('["') and raw.endswith('"]'):
+                        raw = raw[2:-2]
+                    aliases.add(raw)
+        return aliases
+
     @staticmethod
     def _expression_references_aliases(expression: str, raw_aliases: set[str]) -> bool:
         """Check if an expression references any aggregate alias.
@@ -417,10 +437,15 @@ class KustoKqlCompiler(compiler.SQLCompiler):
                     parts = name.split(operator, 1)
                     # Remove quotes if they exist at the edges
                     col_part = parts[0].strip()
+                    rhs = parts[1].strip()
+                    # If LHS is a numeric literal, keep it as-is and escape the RHS
+                    if KustoKqlCompiler._is_number_literal(col_part):
+                        escaped_rhs = KustoKqlCompiler._escape_and_quote_columns(rhs)
+                        return f"{col_part} {operator} {escaped_rhs}"
                     if col_part.startswith('"') and col_part.endswith('"'):
                         col_part = col_part[1:-1].strip()
                     col_part = col_part.replace('"', '\\"')
-                    return f'["{col_part}"] {operator} {parts[1].strip()}'  # Wrap the column part
+                    return f'["{col_part}"] {operator} {rhs}'  # Wrap the column part
         # No operators found, just wrap the entire name
         name = name.replace('"', '\\"')
         return f'["{name}"]'
