@@ -374,9 +374,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         return modified_expression
 
     @staticmethod
-    def _expression_references_aliases(
-        expression: str, raw_aliases: set[str]
-    ) -> bool:
+    def _expression_references_aliases(expression: str, raw_aliases: set[str]) -> bool:
         """Check if an expression references any aggregate alias.
 
         Checks for both double-quoted ("alias") and KQL-escaped (["alias"])
@@ -386,9 +384,7 @@ class KustoKqlCompiler(compiler.SQLCompiler):
         for alias in raw_aliases:
             escaped_alias = re.escape(alias)
             # Match ["alias"] or "alias" anywhere in the expression
-            if re.search(
-                rf'\["{escaped_alias}"\]|"{escaped_alias}"', expression
-            ):
+            if re.search(rf'\["{escaped_alias}"\]|"{escaped_alias}"', expression):
                 return True
             # For simple identifiers, also match unquoted bare references
             if re.fullmatch(r"[A-Za-z_]\w*", alias) and re.search(
